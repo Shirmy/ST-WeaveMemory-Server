@@ -11,6 +11,9 @@ module.exports = [{
     libraryTarget: 'commonjs',
     libraryExport: 'default'
   },
+  externals: {
+    sqlite3: 'commonjs sqlite3'
+  },
   resolve: { extensions: ['.ts', '.js'] },
   module: {
     rules: [{ test: /\.ts$/, use: 'ts-loader', exclude: /node_modules/ }]

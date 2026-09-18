@@ -2,23 +2,37 @@ import bodyParser from 'body-parser';
 import type { Router } from 'express';
 import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type FloorFinalizeRequest, type GenerationPrepareRequest } from '../protocol';
 import { MemoryRuntime } from '../core/runtime';
+import type { SqliteDatabase } from '../storage/sqlite-database';
 
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
   return value;
 }
 
-export function registerRoutes(router: Router, runtime: MemoryRuntime): void {
+export function registerRoutes(router: Router, runtime: MemoryRuntime, database: SqliteDatabase): void {
   const json = bodyParser.json({ limit: '2mb' });
 
-  router.get('/health', (_req, res) => res.json({
-    ok: true,
-    plugin: 'weavememory',
-    backendVersion: BACKEND_VERSION,
-    apiVersion: API_VERSION,
-    schemaVersion: SCHEMA_VERSION,
-    capabilities: ['generation-gate', 'floor-binding', 'state-chain-planned', 'long-memory-planned']
-  }));
+  router.get('/health', async (_req, res) => {
+    try {
+      const databaseHealth = await database.health();
+      return res.json({
+        ok: true,
+        plugin: 'weavememory',
+        backendVersion: BACKEND_VERSION,
+        apiVersion: API_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+        database: databaseHealth,
+        capabilities: ['generation-gate', 'floor-binding', 'persistent-storage', 'state-chain-planned', 'long-memory-planned']
+      });
+    } catch (error) {
+      return res.status(503).json({
+        ok: false,
+        plugin: 'weavememory',
+        error: 'WM_DB_UNAVAILABLE',
+        detail: error instanceof Error ? error.message : 'database health check failed'
+      });
+    }
+  });
 
   router.post('/generation/prepare', json, async (req, res) => {
     try {
