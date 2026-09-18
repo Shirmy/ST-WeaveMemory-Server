@@ -36,12 +36,42 @@ async function main(): Promise<void> {
     });
     assert.equal(bindingB.branch.parentBranchId, bindingA.branch.branchId);
     assert.notEqual(bindingB.branch.branchId, bindingA.branch.branchId);
+    const inheritedBeforeReconcile = await database.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM floor_variants WHERE chat_id = ? AND branch_id = ?',
+      [chatA, bindingB.branch.branchId]
+    );
+    const activeBeforeReconcile = await database.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM chat_active_floors WHERE chat_id = ? AND branch_id = ?',
+      [chatA, bindingB.branch.branchId]
+    );
+    assert.equal(inheritedBeforeReconcile?.count, 0);
+    assert.equal(activeBeforeReconcile?.count, 0);
     const floorsB = [
       ...floorsA.slice(0, 3),
       { messageIndex: 13, swipeId: null, content: '13B' },
       { messageIndex: 14, swipeId: null, content: '14B' }
     ];
     const resultB = await store.reconcileChat({ chatId: chatB, branchId: bindingB.branch.branchId, floors: floorsB });
+    const parentChatCopies = await database.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM floor_variants WHERE chat_id = ? AND branch_id = ? AND message_index <= 12',
+      [chatA, bindingB.branch.branchId]
+    );
+    const childChatCopies = await database.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM floor_variants WHERE chat_id = ? AND branch_id = ? AND message_index <= 12',
+      [chatB, bindingB.branch.branchId]
+    );
+    const parentActiveCopies = await database.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM chat_active_floors WHERE chat_id = ? AND branch_id = ? AND message_index <= 12',
+      [chatA, bindingB.branch.branchId]
+    );
+    const childActiveCopies = await database.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM chat_active_floors WHERE chat_id = ? AND branch_id = ? AND message_index <= 12',
+      [chatB, bindingB.branch.branchId]
+    );
+    assert.equal(parentChatCopies?.count, 0);
+    assert.equal(childChatCopies?.count, 3);
+    assert.equal(parentActiveCopies?.count, 0);
+    assert.equal(childActiveCopies?.count, 3);
     assert.notEqual(resultB.activeFloorIds[3], resultA.activeFloorIds[3]);
     assert.notEqual(resultB.activeFloorIds[4], resultA.activeFloorIds[4]);
 

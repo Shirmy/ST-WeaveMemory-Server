@@ -384,12 +384,32 @@ export class SqliteStore implements MemoryStore {
       [mainChatId, sourceBranchId, input.forkFloor.messageIndex, input.forkFloor.swipeId, fingerprint(input.forkFloor.content)]
     );
     if (!fork) throw new Error('host branch fork floor does not belong to parent chat branch');
-    const created = await this.createBranch({ chatId: mainChatId, sourceBranchId, forkFloorId: fork.floor_id });
+    const branchId = `branch:${mainChatId}:${randomUUID()}`;
     const now = new Date().toISOString();
+    await this.database.transaction(async () => {
+      await this.database.run(
+        `INSERT INTO branches(branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at)
+         VALUES (?, ?, ?, ?, 1, ?)`,
+        [branchId, mainChatId, sourceBranchId, fork.floor_id, now]
+      );
+      await this.database.run('UPDATE branches SET active = 0 WHERE chat_id = ?', [mainChatId]);
+      await this.database.run('UPDATE branches SET active = 1 WHERE branch_id = ?', [branchId]);
+      await this.database.run('UPDATE chats SET active_branch_id = ?, updated_at = ? WHERE chat_id = ?', [branchId, now, mainChatId]);
+    });
     await this.database.run(
       `INSERT INTO host_chat_bindings(host_chat_id, branch_id, parent_host_chat_id, main_chat_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)`, [input.chatId, created.branch.branchId, mainChatId, mainChatId, now, now]
+       VALUES (?, ?, ?, ?, ?, ?)`, [input.chatId, branchId, mainChatId, mainChatId, now, now]
     );
-    return { branch: created.branch, activeFloorIds: [] };
+    return {
+      branch: {
+        branchId,
+        chatId: mainChatId,
+        parentBranchId: sourceBranchId,
+        forkFloorId: fork.floor_id,
+        active: true,
+        createdAt: now
+      },
+      activeFloorIds: []
+    };
   }
 }
