@@ -2,7 +2,7 @@ import type { Response } from 'express';
 import { AiConfigError } from '../storage/ai-config-store';
 
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
+  constructor(readonly status: number, readonly code: string, message: string, readonly detail?: unknown) {
     super(message);
     this.name = 'ApiError';
   }
@@ -10,7 +10,10 @@ export class ApiError extends Error {
 
 export function sendError(res: Response, error: unknown): void {
   if (error instanceof ApiError) {
-    res.status(error.status).json({ ok: false, error: { code: error.code, message: error.message } });
+    res.status(error.status).json({
+      ok: false,
+      error: { code: error.code, message: error.message, ...(error.detail === undefined ? {} : { detail: error.detail }) }
+    });
     return;
   }
   if (error instanceof AiConfigError) {

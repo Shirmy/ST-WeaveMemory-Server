@@ -1,6 +1,7 @@
 import type { Router } from 'express';
 import { registerAiRoutes } from './api/ai-routes';
 import { registerRoutes } from './api/routes';
+import { OpenAiCompatibleClient } from './ai/openai-compatible-client';
 import { SecretBox } from './ai/secret-box';
 import { MemoryRuntime } from './core/runtime';
 import { PerChatQueue } from './queue/per-chat-queue';
@@ -34,7 +35,7 @@ export async function init(router: Router): Promise<void> {
   }
   const activeRuntime = new MemoryRuntime(new SqliteStore(openedDatabase), new PerChatQueue());
   registerRoutes(router, activeRuntime, openedDatabase);
-  registerAiRoutes(router, { aiConfig });
+  registerAiRoutes(router, { aiConfig, client: new OpenAiCompatibleClient() });
   console.log('[WeaveMemory] server v0.1.0 loaded');
 }
 

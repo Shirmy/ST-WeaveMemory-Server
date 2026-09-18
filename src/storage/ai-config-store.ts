@@ -147,6 +147,34 @@ function channelSummary(row: ChannelRow): AiChannelSummary {
   };
 }
 
+export type ChannelDraftInput = { baseUrl: unknown; apiKey?: unknown; headers?: unknown; timeout?: unknown };
+
+/** Validates an unsaved channel configuration so it can be probed before the user saves it. */
+export function draftChannel(input: ChannelDraftInput): AiChannelRecord {
+  let baseUrl: string;
+  try {
+    baseUrl = normalizeBaseUrl(input.baseUrl);
+  } catch (error) {
+    if (error instanceof BaseUrlError) throw new AiConfigError(error.message);
+    throw error;
+  }
+  if (input.apiKey !== undefined && input.apiKey !== null && typeof input.apiKey !== 'string') throw new AiConfigError('apiKey must be a string');
+  const apiKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : null;
+  const now = new Date().toISOString();
+  return {
+    channelId: '',
+    name: '(draft)',
+    apiType: 'openai-compatible',
+    baseUrl,
+    hasApiKey: Boolean(apiKey),
+    timeout: validateTimeout(input.timeout),
+    headers: validateHeaders(input.headers),
+    createdAt: now,
+    updatedAt: now,
+    apiKey
+  };
+}
+
 function presetRecord(row: PresetRow): PromptPresetRecord {
   return {
     presetId: row.preset_id,

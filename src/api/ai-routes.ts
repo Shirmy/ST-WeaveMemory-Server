@@ -1,7 +1,8 @@
 import bodyParser from 'body-parser';
 import type { Request, Response, Router } from 'express';
-import { STATE_TASK_SETTING_LIMITS, type AiChannelInput, type StateTaskSettings } from '../ai/types';
-import { AiConfigStore } from '../storage/ai-config-store';
+import { AiRequestError, OpenAiCompatibleClient } from '../ai/openai-compatible-client';
+import { STATE_TASK_SETTING_LIMITS, type AiChannelInput, type AiChannelRecord, type StateTaskSettings } from '../ai/types';
+import { AiConfigStore, draftChannel, isAiRole } from '../storage/ai-config-store';
 import { ApiError, sendError } from './errors';
 import { bodyObject, optionalInteger, optionalString, requiredString } from './request-utils';
 
@@ -9,11 +10,22 @@ type RouteWork = (req: Request, res: Response) => Promise<unknown>;
 
 export type AiRouteDependencies = {
   aiConfig: AiConfigStore;
+  client: OpenAiCompatibleClient;
 };
+
+/** Timeout used for model lists and connectivity probes when the channel has no explicit timeout. */
+const DEFAULT_PROBE_TIMEOUT_SEC = 30;
+
+function toApiError(error: unknown, code: string): unknown {
+  if (error instanceof AiRequestError) {
+    return new ApiError(502, code, error.message, { cause: error.code, retryable: error.retryable, status: error.status });
+  }
+  return error;
+}
 
 export function registerAiRoutes(router: Router, deps: AiRouteDependencies): void {
   const json = bodyParser.json({ limit: '2mb' });
-  const { aiConfig } = deps;
+  const { aiConfig, client } = deps;
   const wrap = (work: RouteWork) => async (req: Request, res: Response) => {
     try {
       res.json(await work(req, res));
@@ -21,6 +33,20 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
       sendError(res, error);
     }
   };
+
+  /** Resolves a saved channel (optionally with a freshly typed key) or validates an unsaved draft. */
+  async function channelForProbe(body: Record<string, unknown>): Promise<AiChannelRecord> {
+    const channelId = optionalString(body.channelId, 'channelId');
+    if (channelId) {
+      const channel = await aiConfig.getChannel(channelId);
+      if (!channel) throw new ApiError(404, 'WM_INVALID_REQUEST', 'channelId does not exist');
+      if (typeof body.apiKey === 'string' && body.apiKey.trim()) return { ...channel, apiKey: body.apiKey.trim(), hasApiKey: true };
+      return channel;
+    }
+    return draftChannel({ baseUrl: body.baseUrl, apiKey: body.apiKey, headers: body.headers, timeout: body.timeout });
+  }
+
+  const probeTimeoutMs = (channel: AiChannelRecord): number => (channel.timeout ?? DEFAULT_PROBE_TIMEOUT_SEC) * 1000;
 
   // ---------------------------------------------------------------- channels
 
@@ -43,6 +69,38 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
   router.post('/ai/channels/delete', json, wrap(async req => {
     const body = bodyObject(req);
     return aiConfig.deleteChannel(requiredString(body.channelId, 'channelId'));
+  }));
+
+  router.post('/ai/channels/models', json, wrap(async req => {
+    const channel = await channelForProbe(bodyObject(req));
+    try {
+      return { models: await client.listModels(channel, probeTimeoutMs(channel)) };
+    } catch (error) {
+      throw toApiError(error, 'WM_MODEL_LIST_FAILED');
+    }
+  }));
+
+  router.post('/ai/channels/test', json, wrap(async req => {
+    const channel = await channelForProbe(bodyObject(req));
+    const startedAt = Date.now();
+    try {
+      const models = await client.listModels(channel, probeTimeoutMs(channel));
+      return { ok: true, modelCount: models.length, durationMs: Date.now() - startedAt };
+    } catch (error) {
+      throw toApiError(error, 'WM_MODEL_TEST_FAILED');
+    }
+  }));
+
+  router.post('/ai/models/test', json, wrap(async req => {
+    const body = bodyObject(req);
+    if (!isAiRole(body.role)) throw new ApiError(400, 'WM_INVALID_REQUEST', 'role must be one of summary, state, embedding, rerank');
+    const model = requiredString(body.model, 'model').trim();
+    const channel = await channelForProbe(body);
+    try {
+      return await client.testModel(channel, model, body.role, probeTimeoutMs(channel));
+    } catch (error) {
+      throw toApiError(error, 'WM_MODEL_TEST_FAILED');
+    }
   }));
 
   // ---------------------------------------------------------------- model bindings
