@@ -105,7 +105,8 @@ async function main(): Promise<void> {
       database,
       chain: chainStore,
       store,
-      checkpointInterval: async () => (await aiConfig.getStateTaskSettings()).checkpointInterval
+      checkpointInterval: async () => (await aiConfig.getStateTaskSettings()).checkpointInterval,
+      promptVersion: async () => (await aiConfig.getActivePrompt('state')).promptVersion
     });
     const queue = new PerChatQueue();
     runner = new StateTaskRunner({ store, tasks, aiConfig, client: new OpenAiCompatibleClient(), queue, context: new SnapshotContextProvider(chain, tasks), chain, backoffMs: () => 10 });

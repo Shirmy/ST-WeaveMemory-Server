@@ -289,6 +289,18 @@ CREATE INDEX IF NOT EXISTS idx_state_deltas_node
 CREATE INDEX IF NOT EXISTS idx_checkpoints_branch
   ON checkpoints(branch_id, created_at);
 `
+}, {
+  version: 6,
+  name: 'dependency-lookups-for-rebuild',
+  sql: `
+ALTER TABLE jobs ADD COLUMN dependency_fingerprint TEXT;
+UPDATE jobs SET dependency_fingerprint = json_extract(payload_json, '$.dependencyFingerprint') WHERE dependency_fingerprint IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_branch_dependency
+  ON jobs(branch_id, dependency_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_state_nodes_branch_dependency
+  ON state_nodes(branch_id, dependency_fingerprint);
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

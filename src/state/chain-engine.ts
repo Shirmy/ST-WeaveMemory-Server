@@ -1,10 +1,12 @@
-import type { StateChainStore, StateNodeRecord, StateDeltaRecord, ActiveFloorRef } from '../storage/state-chain-store';
+import { dependencyFingerprint } from '../core/fingerprint';
+import { STATE_PROTOCOL_VERSION } from '../protocol';
+import type { StateChainStore, StateNodeRecord, StateDeltaRecord, StateNodeStatus } from '../storage/state-chain-store';
 import { newCheckpointId, newDeltaId, newStateNodeId } from '../storage/state-chain-store';
 import type { SqliteDatabase } from '../storage/sqlite-database';
-import type { MemoryStore } from '../storage/types';
+import type { FloorRecord, MemoryStore } from '../storage/types';
 import { applyCandidate, emptySnapshot, snapshotFingerprint } from './apply';
 import { applyChangesInPlace, deepClone, diffValues, partitionChanges } from './diff';
-import type { StateAnalysisCandidate, StateSnapshot } from './schema';
+import { STATE_SCHEMA_VERSION, type StateAnalysisCandidate, type StateSnapshot } from './schema';
 
 export class StateChainError extends Error {
   constructor(readonly code: string, message: string) {
@@ -16,28 +18,42 @@ export class StateChainError extends Error {
 export type ChainPosition = {
   messageIndex: number;
   floorId: string;
-  /** The node that represents this floor in the trusted prefix, or the latest known node when invalid. */
+  swipeId: number | null;
+  bodyFingerprint: string;
+  floorStatus: FloorRecord['status'];
+  /** Dependency fingerprint a valid node for this floor must carry (null once the strict chain is broken). */
+  expectedDependency: string | null;
+  /** The node representing this floor: the strictly valid one, else the lineage-valid one, else the latest known. */
   node: StateNodeRecord | null;
+  /** Roadmap §21: body, previous state fingerprint, protocol, schema and prompt version all match. */
   valid: boolean;
+  /** Structural validity only: the previous-state fingerprints link up, whatever prompt version produced the node. */
+  lineageValid: boolean;
 };
 
 /**
  * Roadmap §21 "trusted prefix": walking the active floors in order, a floor is valid when it has a
- * synced node whose previousStateFingerprint equals the fingerprint of the previous valid node
- * (null at the chain start). The first floor that fails breaks the chain for everything after it.
+ * node whose dependency fingerprint equals the one expected from the previous valid node and the
+ * current prompt version. The first floor that fails breaks the strict chain for everything after
+ * it. The lineage view ignores prompt drift so the last known state can still be shown.
  */
 export type TrustedPrefix = {
   chatId: string;
   branchId: string;
+  promptVersion: string;
   positions: ChainPosition[];
   firstInvalidIndex: number | null;
+  firstLineageBreakIndex: number | null;
   head: StateNodeRecord | null;
+  lineageHead: StateNodeRecord | null;
+  /** Every node of the branch as loaded for this computation, so callers can avoid a second scan. */
+  nodes: StateNodeRecord[];
 };
 
 export type PreviousResolution =
   | { kind: 'start' }
-  | { kind: 'ready'; node: StateNodeRecord; floor: ActiveFloorRef }
-  | { kind: 'blocked'; floor: ActiveFloorRef; reason: string };
+  | { kind: 'ready'; node: StateNodeRecord; floor: { messageIndex: number; floorId: string } }
+  | { kind: 'blocked'; floor: { messageIndex: number; floorId: string }; reason: string };
 
 export type ReplayResult = {
   snapshot: StateSnapshot;
@@ -70,6 +86,7 @@ export type CommitCandidateResult = {
 
 export type CurrentStateView = {
   prefix: TrustedPrefix;
+  /** Last lineage-valid node; equals prefix.head unless only prompt drift separates them. */
   node: StateNodeRecord | null;
   snapshot: StateSnapshot;
 };
@@ -81,11 +98,15 @@ export type FloorStateView = {
   valid: boolean;
 };
 
+export type StatusSyncResult = { nodeUpdates: number; floorUpdates: number };
+
 export type StateChainEngineDeps = {
   database: SqliteDatabase;
   chain: StateChainStore;
   store: MemoryStore;
   checkpointInterval: () => Promise<number>;
+  /** Content hash of the active state prompt; part of every dependency fingerprint (§13). */
+  promptVersion: () => Promise<string>;
 };
 
 function fingerprintOf(node: StateNodeRecord | null): string | null {
@@ -93,8 +114,9 @@ function fingerprintOf(node: StateNodeRecord | null): string | null {
 }
 
 /**
- * Builds and reads the state chain (roadmap §12–§15, §21): one synced node per analysed floor,
+ * Builds and reads the state chain (roadmap §12–§15, §21): one node per analysed floor variant,
  * program-computed deltas, periodic checkpoints, replay = nearest checkpoint + later deltas.
+ * Node validity is derived at read time; node statuses are bookkeeping refreshed by syncStatuses().
  */
 export class StateChainEngine {
   constructor(private readonly deps: StateChainEngineDeps) {}
@@ -102,42 +124,56 @@ export class StateChainEngine {
   async trustedPrefix(chatId: string, branchId: string): Promise<TrustedPrefix> {
     const floors = await this.deps.chain.listActiveFloors(chatId, branchId);
     const nodes = await this.deps.chain.listNodes(branchId);
+    const promptVersion = await this.deps.promptVersion();
     const byFloor = new Map<string, StateNodeRecord[]>();
     for (const node of nodes) {
-      if (node.status !== 'synced') continue;
       const list = byFloor.get(node.floorId) ?? [];
       list.push(node);
       byFloor.set(node.floorId, list);
     }
     for (const list of byFloor.values()) list.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     const positions: ChainPosition[] = [];
-    let previous: StateNodeRecord | null = null;
+    let strictPrevious: StateNodeRecord | null = null;
+    let lineagePrevious: StateNodeRecord | null = null;
     let firstInvalidIndex: number | null = null;
+    let firstLineageBreakIndex: number | null = null;
     for (const floor of floors) {
       const candidates = byFloor.get(floor.floorId) ?? [];
-      const expected = fingerprintOf(previous);
-      const match = firstInvalidIndex === null ? candidates.find(node => (node.previousStateFingerprint ?? null) === expected) ?? null : null;
-      if (match) {
-        positions.push({ messageIndex: floor.messageIndex, floorId: floor.floorId, node: match, valid: true });
-        previous = match;
-        continue;
-      }
-      if (firstInvalidIndex === null) firstInvalidIndex = floor.messageIndex;
-      positions.push({ messageIndex: floor.messageIndex, floorId: floor.floorId, node: candidates[0] ?? null, valid: false });
+      const expectedDependency: string | null = firstInvalidIndex === null
+        ? dependencyFingerprint({
+          bodyFingerprint: floor.bodyFingerprint,
+          previousStateFingerprint: fingerprintOf(strictPrevious),
+          protocolVersion: STATE_PROTOCOL_VERSION,
+          schemaVersion: STATE_SCHEMA_VERSION,
+          promptVersion
+        })
+        : null;
+      const strictMatch: StateNodeRecord | null = expectedDependency ? candidates.find(node => node.dependencyFingerprint === expectedDependency) ?? null : null;
+      const lineageExpected: string | null = fingerprintOf(lineagePrevious);
+      const lineageMatch: StateNodeRecord | null = firstLineageBreakIndex === null ? candidates.find(node => (node.previousStateFingerprint ?? null) === lineageExpected) ?? null : null;
+      if (!strictMatch && firstInvalidIndex === null) firstInvalidIndex = floor.messageIndex;
+      if (!lineageMatch && firstLineageBreakIndex === null) firstLineageBreakIndex = floor.messageIndex;
+      positions.push({
+        messageIndex: floor.messageIndex,
+        floorId: floor.floorId,
+        swipeId: floor.swipeId,
+        bodyFingerprint: floor.bodyFingerprint,
+        floorStatus: floor.status,
+        expectedDependency,
+        node: strictMatch ?? lineageMatch ?? candidates[0] ?? null,
+        valid: Boolean(strictMatch),
+        lineageValid: Boolean(lineageMatch)
+      });
+      if (strictMatch) strictPrevious = strictMatch;
+      if (lineageMatch) lineagePrevious = lineageMatch;
     }
-    return { chatId, branchId, positions, firstInvalidIndex, head: previous };
+    return { chatId, branchId, promptVersion, positions, firstInvalidIndex, firstLineageBreakIndex, head: strictPrevious, lineageHead: lineagePrevious, nodes };
   }
 
   /** Which state a floor at `messageIndex` must be analysed against, plus the prefix it was derived from. */
   async resolvePreviousWithPrefix(chatId: string, branchId: string, messageIndex: number): Promise<{ resolution: PreviousResolution; prefix: TrustedPrefix }> {
     const prefix = await this.trustedPrefix(chatId, branchId);
-    const before = prefix.positions.filter(position => position.messageIndex < messageIndex);
-    const last = before.at(-1);
-    if (!last) return { resolution: { kind: 'start' }, prefix };
-    const floor = { messageIndex: last.messageIndex, floorId: last.floorId };
-    if (last.valid && last.node) return { resolution: { kind: 'ready', node: last.node, floor }, prefix };
-    const reason = last.node ? 'its state node no longer matches the chain before it' : 'it has no synced state node';
-    return { resolution: { kind: 'blocked', floor, reason }, prefix };
+    return { resolution: resolveFromPrefix(prefix, messageIndex), prefix };
   }
 
   async resolvePrevious(chatId: string, branchId: string, messageIndex: number): Promise<PreviousResolution> {
@@ -147,6 +183,39 @@ export class StateChainEngine {
   /** The node representing `floorId` inside the trusted prefix, if any. */
   async validNodeForFloor(chatId: string, branchId: string, floorId: string): Promise<StateNodeRecord | null> {
     return validNodeInPrefix(await this.trustedPrefix(chatId, branchId), floorId);
+  }
+
+  async branchHasNodes(branchId: string): Promise<boolean> {
+    return (await this.deps.chain.countNodes(branchId)) > 0;
+  }
+
+  /**
+   * Refreshes derived bookkeeping (roadmap §12 / §16 statuses): nodes in the strict prefix are
+   * `synced`, other nodes of active floors are `stale`, nodes of inactive variants are `inactive`;
+   * active floors leave `synced` when their node stopped being valid.
+   */
+  async syncStatuses(prefix: TrustedPrefix): Promise<StatusSyncResult> {
+    const { chain, store } = this.deps;
+    const now = new Date().toISOString();
+    const validNodeIds = new Set(prefix.positions.filter(position => position.valid && position.node).map(position => position.node!.stateNodeId));
+    const activeFloorIds = new Set(prefix.positions.map(position => position.floorId));
+    let nodeUpdates = 0;
+    for (const node of prefix.nodes) {
+      const desired: StateNodeStatus = validNodeIds.has(node.stateNodeId) ? 'synced' : activeFloorIds.has(node.floorId) ? 'stale' : 'inactive';
+      if (node.status === desired) continue;
+      await chain.updateNodeStatus(node.stateNodeId, desired, now);
+      node.status = desired;
+      nodeUpdates += 1;
+    }
+    let floorUpdates = 0;
+    for (const position of prefix.positions) {
+      const desired: FloorRecord['status'] | null = position.valid ? 'synced' : position.floorStatus === 'synced' ? 'pending' : null;
+      if (!desired || desired === position.floorStatus) continue;
+      await store.updateFloorStatus(position.floorId, desired);
+      position.floorStatus = desired;
+      floorUpdates += 1;
+    }
+    return { nodeUpdates, floorUpdates };
   }
 
   async snapshotAt(node: StateNodeRecord): Promise<ReplayResult> {
@@ -275,9 +344,10 @@ export class StateChainEngine {
 
   async current(chatId: string, branchId: string): Promise<CurrentStateView> {
     const prefix = await this.trustedPrefix(chatId, branchId);
-    if (!prefix.head) return { prefix, node: null, snapshot: emptySnapshot(branchId) };
-    const replay = await this.snapshotAt(prefix.head);
-    return { prefix, node: prefix.head, snapshot: replay.snapshot };
+    const node = prefix.lineageHead;
+    if (!node) return { prefix, node: null, snapshot: emptySnapshot(branchId) };
+    const replay = await this.snapshotAt(node);
+    return { prefix, node, snapshot: replay.snapshot };
   }
 
   /** State after a specific floor variant, whether or not it is part of the current chain. */
@@ -287,7 +357,7 @@ export class StateChainEngine {
     const prefix = await this.trustedPrefix(chatId, branchId);
     for (const floorId of floorIds) {
       const position = prefix.positions.find(item => item.floorId === floorId);
-      const node = position?.valid && position.node ? position.node : (await this.deps.chain.listNodesForFloor(floorId)).find(item => item.status === 'synced') ?? null;
+      const node = position?.valid && position.node ? position.node : (await this.deps.chain.listNodesForFloor(floorId))[0] ?? null;
       if (!node) continue;
       const replay = await this.snapshotAt(node);
       return { floorId, node, snapshot: replay.snapshot, valid: Boolean(position?.valid) };
@@ -310,4 +380,17 @@ export class StateChainEngine {
 export function validNodeInPrefix(prefix: TrustedPrefix, floorId: string): StateNodeRecord | null {
   const position = prefix.positions.find(item => item.floorId === floorId);
   return position?.valid ? position.node : null;
+}
+
+/** Which state a floor at `messageIndex` must be analysed against, read off an already computed prefix. */
+export function resolveFromPrefix(prefix: TrustedPrefix, messageIndex: number): PreviousResolution {
+  const before = prefix.positions.filter(position => position.messageIndex < messageIndex);
+  const last = before.at(-1);
+  if (!last) return { kind: 'start' };
+  const floor = { messageIndex: last.messageIndex, floorId: last.floorId };
+  if (last.valid && last.node) return { kind: 'ready', node: last.node, floor };
+  const reason = last.node
+    ? last.lineageValid ? 'its state node was produced under a different prompt version' : 'its state node no longer matches the chain before it'
+    : 'it has no synced state node';
+  return { kind: 'blocked', floor, reason };
 }

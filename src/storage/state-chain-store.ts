@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { JsonPatchLikeChange } from '../state/diff';
 import type { StateSnapshot } from '../state/schema';
 import type { SqliteDatabase } from './sqlite-database';
+import type { FloorRecord } from './types';
 
 export type StateNodeStatus = 'pending' | 'synced' | 'failed' | 'stale' | 'inactive';
 
@@ -59,7 +60,13 @@ export type BranchHeadRecord = {
   updatedAt: string;
 };
 
-export type ActiveFloorRef = { messageIndex: number; floorId: string };
+export type ActiveFloorRef = {
+  messageIndex: number;
+  floorId: string;
+  swipeId: number | null;
+  bodyFingerprint: string;
+  status: FloorRecord['status'];
+};
 
 type NodeRow = {
   state_node_id: string;
@@ -155,11 +162,20 @@ export class StateChainStore {
   constructor(private readonly database: SqliteDatabase) {}
 
   async listActiveFloors(chatId: string, branchId: string): Promise<ActiveFloorRef[]> {
-    const rows = await this.database.all<{ message_index: number; floor_id: string }>(
-      'SELECT message_index, floor_id FROM chat_active_floors WHERE chat_id = ? AND branch_id = ? ORDER BY message_index ASC',
+    const rows = await this.database.all<{ message_index: number; floor_id: string; swipe_id: number | null; body_fingerprint: string; status: FloorRecord['status'] }>(
+      `SELECT active.message_index, active.floor_id, floors.swipe_id, floors.body_fingerprint, floors.status
+       FROM chat_active_floors AS active
+       JOIN floor_variants AS floors ON floors.floor_id = active.floor_id
+       WHERE active.chat_id = ? AND active.branch_id = ?
+       ORDER BY active.message_index ASC`,
       [chatId, branchId]
     );
-    return rows.map(row => ({ messageIndex: row.message_index, floorId: row.floor_id }));
+    return rows.map(row => ({ messageIndex: row.message_index, floorId: row.floor_id, swipeId: row.swipe_id, bodyFingerprint: row.body_fingerprint, status: row.status }));
+  }
+
+  async countNodes(branchId: string): Promise<number> {
+    const row = await this.database.get<{ count: number }>('SELECT COUNT(*) AS count FROM state_nodes WHERE branch_id = ?', [branchId]);
+    return Number(row?.count ?? 0);
   }
 
   /** Floor variants at a host locator (null and 0 swipe ids are the same locator), active ones first. */

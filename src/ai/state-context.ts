@@ -31,6 +31,8 @@ export type StateContextTarget = {
   branchId: string;
   floorId: string;
   messageIndex: number;
+  /** An already computed trusted prefix to read from instead of scanning the chain again. */
+  prefix?: TrustedPrefix;
 };
 
 export interface StateContextProvider {

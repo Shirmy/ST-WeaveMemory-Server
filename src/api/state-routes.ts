@@ -49,6 +49,16 @@ export function registerStateRoutes(router: Router, deps: StateRouteDependencies
     return deps.stateTasks.requeueFloor(requiredString(body.chatId, 'chatId'), requiredString(body.floorId, 'floorId'));
   }));
 
+  router.post('/state/rebuild', json, wrapRoute(async req => {
+    const body = bodyObject(req);
+    return deps.stateTasks.rebuild({
+      chatId: requiredString(body.chatId, 'chatId'),
+      branchId: optionalString(body.branchId, 'branchId'),
+      fromMessageIndex: optionalInteger(body.fromMessageIndex, 'fromMessageIndex'),
+      force: body.force === true
+    });
+  }));
+
   router.get('/state/current', wrapRoute(async req => {
     const query = queryObject(req);
     const chatId = requiredString(query.chatId, 'chatId');
@@ -63,6 +73,8 @@ export function registerStateRoutes(router: Router, deps: StateRouteDependencies
       headMessageIndex: view.node?.messageIndex ?? null,
       latestMessageIndex: latest?.messageIndex ?? null,
       firstInvalidMessageIndex: view.prefix.firstInvalidIndex,
+      firstLineageBreakMessageIndex: view.prefix.firstLineageBreakIndex,
+      promptVersion: view.prefix.promptVersion,
       syncStatus: await describeSync(view.prefix),
       snapshot: view.snapshot
     };

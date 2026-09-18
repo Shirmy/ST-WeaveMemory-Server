@@ -48,7 +48,8 @@ export async function init(router: Router): Promise<void> {
     database: openedDatabase,
     chain: new StateChainStore(openedDatabase),
     store,
-    checkpointInterval: async () => (await aiConfig.getStateTaskSettings()).checkpointInterval
+    checkpointInterval: async () => (await aiConfig.getStateTaskSettings()).checkpointInterval,
+    promptVersion: async () => (await aiConfig.getActivePrompt('state')).promptVersion
   });
   const runner = new StateTaskRunner({
     store,

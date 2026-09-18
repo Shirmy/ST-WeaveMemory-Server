@@ -57,12 +57,15 @@ export function emptySnapshot(branchId: string, now = '1970-01-01T00:00:00.000Z'
   };
 }
 
+/** Keys that describe bookkeeping rather than story state; they never influence the state fingerprint. */
+const VOLATILE_KEYS = new Set(['updatedAt', 'source', 'sourceFloorIds', 'sourceHostChatIds']);
+
 function stripVolatile(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripVolatile);
   if (isPlainObject(value)) {
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
-      if (key === 'updatedAt') continue;
+      if (VOLATILE_KEYS.has(key)) continue;
       result[key] = stripVolatile(entry);
     }
     return result;
@@ -71,9 +74,10 @@ function stripVolatile(value: unknown): unknown {
 }
 
 /**
- * Semantic fingerprint of a snapshot (roadmap §12 stateFingerprint). Timestamps are excluded so a
- * re-analysis that lands on the same state produces the same fingerprint and downstream nodes
- * can be reused (§21 convergence).
+ * Semantic fingerprint of a snapshot (roadmap §12 stateFingerprint). Timestamps and provenance
+ * (which floors confirmed a record) are excluded so a re-analysis that lands on the same story
+ * state produces the same fingerprint even after floors were edited or renumbered, letting
+ * downstream nodes be reused (§21 convergence).
  */
 export function snapshotFingerprint(snapshot: StateSnapshot): string {
   return hashCanonical(stripVolatile(snapshot));

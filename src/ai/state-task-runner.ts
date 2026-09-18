@@ -2,7 +2,7 @@ import { dependencyFingerprint } from '../core/fingerprint';
 import { STATE_PROTOCOL_VERSION } from '../protocol';
 import type { PerChatQueue } from '../queue/per-chat-queue';
 import { StateApplyError } from '../state/apply';
-import { StateChainError, validNodeInPrefix, type StateChainEngine } from '../state/chain-engine';
+import { StateChainError, validNodeInPrefix, type StateChainEngine, type TrustedPrefix } from '../state/chain-engine';
 import {
   normalizeStateAnalysisResponse,
   STATE_SCHEMA_VERSION,
@@ -53,6 +53,8 @@ export type EnqueueFloorInput = {
   reason?: string;
   /** Skip every reuse shortcut and call the model again (manual re-run). */
   force?: boolean;
+  /** A trusted prefix computed moments ago by the caller, reused instead of scanning the chain again. */
+  prefix?: TrustedPrefix;
 };
 
 export type EnqueueOutcome = {
@@ -60,6 +62,26 @@ export type EnqueueOutcome = {
   /** Set when an existing valid state node already covers this floor and dependency. */
   stateNodeId: string | null;
   outcome: 'queued' | 'already-queued' | 'reused';
+};
+
+/** Result of a rebuild planning pass (roadmap §21). */
+export type RebuildPlan = {
+  chatId: string;
+  branchId: string;
+  firstInvalidIndex: number | null;
+  firstLineageBreakIndex: number | null;
+  cancelled: number;
+  enqueued: EnqueueOutcome | null;
+  /** Why nothing was enqueued: the chain is valid, the branch has no chain yet, only the prompt changed, or the floor keeps failing. */
+  skipped: 'chain-valid' | 'no-chain' | 'prompt-version' | 'failed-floor' | null;
+};
+
+export type RebuildInput = {
+  chatId: string;
+  branchId?: string;
+  /** With `force`, re-analyse this floor even if it is valid; everything after it is rebuilt in order. */
+  fromMessageIndex?: number;
+  force?: boolean;
 };
 
 export type AdHocStateAnalysisInput = {
@@ -164,13 +186,14 @@ export class StateTaskRunner {
     const active = await tasks.findActiveJobForFloor(input.floorId);
     if (active) return { jobId: active.jobId, stateNodeId: null, outcome: 'already-queued' };
     const prompt = await aiConfig.getActivePrompt('state');
-    const loaded = await context.load({ chatId: input.chatId, branchId: input.branchId, floorId: input.floorId, messageIndex: input.messageIndex });
+    const loaded = await context.load({ chatId: input.chatId, branchId: input.branchId, floorId: input.floorId, messageIndex: input.messageIndex, prefix: input.prefix });
     let dependency: string | null = null;
     let reuseFromJobId: string | null = null;
     if (!loaded.blocked) {
       dependency = dependencyOf(input.bodyFingerprint, loaded, prompt.promptVersion);
       if (!input.force) {
-        const priorJob = (await tasks.findSucceededJobs(input.floorId)).find(job => job.payload.dependencyFingerprint === dependency && job.result);
+        const priorJob = (await tasks.findSucceededJobs(input.floorId)).find(job => job.payload.dependencyFingerprint === dependency && job.result)
+          ?? await tasks.findSucceededJobByDependency(input.branchId, dependency);
         if (chain) {
           const validNode = loaded.prefix ? validNodeInPrefix(loaded.prefix, input.floorId) : await chain.validNodeForFloor(input.chatId, input.branchId, input.floorId);
           if (validNode && validNode.dependencyFingerprint === dependency) {
@@ -200,9 +223,18 @@ export class StateTaskRunner {
     return { jobId: job.jobId, stateNodeId: null, outcome: 'queued' };
   }
 
-  /** Called inside the reconcile queue slot: floors that went stale must not receive late results. */
-  async handleReconcile(result: ChatReconcileResult): Promise<void> {
+  /**
+   * Called inside the reconcile queue slot (roadmap §19 / §20 / §54): jobs of stale or no longer
+   * active floors are cancelled, then the chain is re-planned so the first invalid floor is rebuilt.
+   */
+  async handleReconcile(result: ChatReconcileResult): Promise<RebuildPlan | null> {
     await this.cancelForFloors(result.staleFloorIds, 'floor became stale during reconcile');
+    const { chain, tasks } = this.deps;
+    if (!chain) return null;
+    const active = new Set(result.activeFloorIds);
+    const inactiveJobs = (await tasks.listActiveJobs(result.chatId, result.branchId)).filter(job => !active.has(job.floorId));
+    await this.cancelJobs(inactiveJobs, 'floor is no longer the active variant');
+    return this.planRebuild(result.chatId, result.branchId, 'auto');
   }
 
   async cancelForFloors(floorIds: string[], reason: string): Promise<number> {
@@ -210,6 +242,121 @@ export class StateTaskRunner {
     const cancelled = await this.deps.tasks.cancelActiveJobs(floorIds, reason);
     for (const job of cancelled) this.controllers.get(job.jobId)?.abort();
     return cancelled.length;
+  }
+
+  /**
+   * Roadmap §21: compute the trusted prefix, drop in-flight work that depends on an invalid
+   * predecessor, and queue the first invalid floor. Convergence stops the cascade by itself because
+   * downstream nodes that still match are simply kept. Must be called while holding the chat's queue slot.
+   */
+  async planRebuild(chatId: string, branchId: string, mode: 'auto' | 'manual'): Promise<RebuildPlan> {
+    const { chain, tasks, store } = this.deps;
+    if (!chain) throw new StateTaskError('WM_INTERNAL_ERROR', 'state chain is not available');
+    const prefix = await chain.trustedPrefix(chatId, branchId);
+    await chain.syncStatuses(prefix);
+    const plan: RebuildPlan = {
+      chatId,
+      branchId,
+      firstInvalidIndex: prefix.firstInvalidIndex,
+      firstLineageBreakIndex: prefix.firstLineageBreakIndex,
+      cancelled: 0,
+      enqueued: null,
+      skipped: null
+    };
+    if (prefix.firstInvalidIndex === null) {
+      plan.skipped = 'chain-valid';
+      return plan;
+    }
+    const first = prefix.positions.find(position => position.messageIndex === prefix.firstInvalidIndex);
+    if (!first) return plan;
+    const activeJobs = await tasks.listActiveJobs(chatId, branchId);
+    const headFingerprint = prefix.head?.stateFingerprint ?? null;
+    // Pending downstream jobs compute their dependency when they start, so only running ones hold a stale previous state.
+    plan.cancelled += await this.cancelJobs(
+      activeJobs.filter(job => job.messageIndex > first.messageIndex && job.status === 'running'),
+      'the chain before this floor is no longer valid; it is rebuilt in order'
+    );
+    const firstJob = activeJobs.find(job => job.floorId === first.floorId);
+    if (firstJob) {
+      const stillRight = firstJob.status === 'pending' || (firstJob.payload.previousStateFingerprint ?? null) === headFingerprint;
+      if (stillRight) {
+        plan.enqueued = { jobId: firstJob.jobId, stateNodeId: null, outcome: 'already-queued' };
+        return plan;
+      }
+      plan.cancelled += await this.cancelJobs([firstJob], 'its previous state changed; re-queued by rebuild');
+    }
+    if (mode === 'auto') {
+      if (first.node && first.lineageValid) {
+        // Only the prompt (or protocol) version differs: re-analysing everything is a user decision.
+        plan.skipped = 'prompt-version';
+        return plan;
+      }
+      if (!(await chain.branchHasNodes(branchId))) {
+        plan.skipped = 'no-chain';
+        return plan;
+      }
+      const latest = (await tasks.listJobs({ chatId, floorId: first.floorId, limit: 1000 })).at(-1);
+      // A floor that only failed because its predecessor was not ready is retried; real analysis failures wait for the user.
+      if (latest?.status === 'failed' && latest.errorCode !== 'WM_STATE_PENDING') {
+        plan.skipped = 'failed-floor';
+        return plan;
+      }
+    }
+    const floor = await store.getFloor(first.floorId);
+    if (!floor) throw new StateTaskError('WM_INTERNAL_ERROR', `active floor ${first.floorId} is missing`);
+    plan.enqueued = await this.enqueueForFloor({
+      chatId,
+      branchId,
+      floorId: floor.floorKey,
+      messageIndex: floor.messageIndex,
+      swipeId: floor.swipeId,
+      bodyFingerprint: floor.contentFingerprint,
+      reason: mode === 'auto' ? 'rebuild' : 'manual-rebuild',
+      prefix
+    });
+    return plan;
+  }
+
+  /** Manual rebuild (roadmap §51 /state/rebuild): resume from the first invalid floor, or force a floor and everything after it. */
+  async rebuild(input: RebuildInput): Promise<RebuildPlan> {
+    const { chain, store, tasks, queue } = this.deps;
+    if (!chain) throw new StateTaskError('WM_INTERNAL_ERROR', 'state chain is not available');
+    const branchId = input.branchId ?? await store.getOrCreateActiveBranch(input.chatId);
+    const plan = await queue.run(input.chatId, async () => {
+      if (!input.force) return this.planRebuild(input.chatId, branchId, 'manual');
+      const from = input.fromMessageIndex;
+      if (from === undefined) throw new StateTaskError('WM_INVALID_REQUEST', 'fromMessageIndex is required for a forced rebuild');
+      const prefix = await chain.trustedPrefix(input.chatId, branchId);
+      const target = prefix.positions.find(position => position.messageIndex === from);
+      if (!target) throw new StateTaskError('WM_INVALID_REQUEST', `no active AI floor at message index ${from}`);
+      if (prefix.firstInvalidIndex !== null && prefix.firstInvalidIndex < from) {
+        throw new StateTaskError('WM_INVALID_REQUEST', `the chain is already invalid from floor ${prefix.firstInvalidIndex}; rebuild from there first`);
+      }
+      const activeJobs = await tasks.listActiveJobs(input.chatId, branchId);
+      const cancelled = await this.cancelJobs(activeJobs.filter(job => job.messageIndex >= from), 'forced rebuild from an earlier floor');
+      const floor = await store.getFloor(target.floorId);
+      if (!floor) throw new StateTaskError('WM_INTERNAL_ERROR', `active floor ${target.floorId} is missing`);
+      const enqueued = await this.enqueueForFloor({
+        chatId: input.chatId,
+        branchId,
+        floorId: floor.floorKey,
+        messageIndex: floor.messageIndex,
+        swipeId: floor.swipeId,
+        bodyFingerprint: floor.contentFingerprint,
+        reason: 'manual',
+        force: true
+      });
+      return { chatId: input.chatId, branchId, firstInvalidIndex: prefix.firstInvalidIndex, firstLineageBreakIndex: prefix.firstLineageBreakIndex, cancelled, enqueued, skipped: null } satisfies RebuildPlan;
+    });
+    this.kick(input.chatId);
+    return plan;
+  }
+
+  private async cancelJobs(jobs: StateTaskRecord[], reason: string): Promise<number> {
+    if (!jobs.length) return 0;
+    await this.deps.tasks.cancelJobsByIds(jobs.map(job => job.jobId), reason);
+    for (const job of jobs) this.controllers.get(job.jobId)?.abort();
+    return jobs.length;
   }
 
   /** Starts (or nudges) the per-chat drain loop. Safe to call from anywhere outside the queue. */
@@ -387,7 +534,8 @@ export class StateTaskRunner {
       const preferred = current.payload.reuseFromJobId ? await tasks.getJob(current.payload.reuseFromJobId) : null;
       const source = preferred && preferred.result && preferred.payload.dependencyFingerprint === dependency
         ? preferred
-        : (await tasks.findSucceededJobs(current.floorId)).find(item => item.jobId !== current.jobId && item.result && item.payload.dependencyFingerprint === dependency) ?? null;
+        : (await tasks.findSucceededJobs(current.floorId)).find(item => item.jobId !== current.jobId && item.result && item.payload.dependencyFingerprint === dependency)
+          ?? await tasks.findSucceededJobByDependency(current.branchId, dependency);
       if (source?.result) reuse = { fromJobId: source.jobId, candidate: source.result.candidate };
     }
     let channel: AiChannelRecord | null = null;
@@ -619,6 +767,14 @@ export class StateTaskRunner {
         throw error;
       }
       await tasks.updateJob(jobId, { status: 'succeeded', attempts: outcome.attempts, result, errorCode: null, errorMessage: null, finishedAt: now });
+      // Roadmap §21: keep rebuilding forward until the chain converges or ends. A cascade started by the
+      // user (manual re-run or forced rebuild) keeps its manual intent so prompt-version and failure guards do not stop it.
+      const mode = current.payload.reason === 'manual' || current.payload.reason === 'manual-rebuild' ? 'manual' : 'auto';
+      try {
+        await this.planRebuild(current.chatId, current.branchId, mode);
+      } catch (error) {
+        console.error('[WeaveMemory] rebuild planning after commit failed', current.chatId, errorMessage(error));
+      }
       return;
     }
     await tasks.updateJob(jobId, { status: 'succeeded', attempts: outcome.attempts, result, errorCode: null, errorMessage: null, finishedAt: now });

@@ -1,5 +1,5 @@
 import { deriveKnownCharacters, deriveLockedPaths } from '../state/apply';
-import type { StateChainEngine } from '../state/chain-engine';
+import { resolveFromPrefix, type StateChainEngine } from '../state/chain-engine';
 import type { StateTaskStore } from '../storage/state-task-store';
 import { emptyRelevantState, type StateAnalysisContext, type StateContextProvider, type StateContextTarget } from './state-context';
 
@@ -12,7 +12,8 @@ export class SnapshotContextProvider implements StateContextProvider {
   constructor(private readonly chain: StateChainEngine, private readonly tasks: StateTaskStore) {}
 
   async load(target: StateContextTarget): Promise<StateAnalysisContext> {
-    const { resolution, prefix } = await this.chain.resolvePreviousWithPrefix(target.chatId, target.branchId, target.messageIndex);
+    const prefix = target.prefix ?? await this.chain.trustedPrefix(target.chatId, target.branchId);
+    const resolution = resolveFromPrefix(prefix, target.messageIndex);
     if (resolution.kind === 'blocked') {
       const pending = await this.tasks.findActiveJobForFloor(resolution.floor.floorId);
       return {

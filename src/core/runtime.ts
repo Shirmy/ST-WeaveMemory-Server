@@ -55,11 +55,13 @@ export class MemoryRuntime {
   }
 
   async reconcileChat(input: ChatReconcileRequest) {
-    return this.queue.run(input.chatId, async () => {
-      const result = await this.store.reconcileChat(input);
-      await this.stateTasks?.handleReconcile(result);
-      return result;
+    const result = await this.queue.run(input.chatId, async () => {
+      const reconciled = await this.store.reconcileChat(input);
+      const rebuild = this.stateTasks ? await this.stateTasks.handleReconcile(reconciled) : null;
+      return { ...reconciled, rebuild };
     });
+    this.stateTasks?.kick(input.chatId);
+    return result;
   }
 
   async createBranch(input: CreateBranchRequest) {

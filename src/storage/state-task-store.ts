@@ -100,11 +100,12 @@ type JobRow = {
   error_message: string | null;
   started_at: string | null;
   finished_at: string | null;
+  dependency_fingerprint: string | null;
 };
 
 const ACTIVE_STATUSES: StateTaskStatus[] = ['pending', 'running'];
 const SELECT_COLUMNS = `job_id, chat_id, kind, status, payload_json, created_at, updated_at, branch_id, floor_id,
-  message_index, attempts, result_json, error_code, error_message, started_at, finished_at`;
+  message_index, attempts, result_json, error_code, error_message, started_at, finished_at, dependency_fingerprint`;
 
 function parseJson<T>(text: string | null, fallback: T): T {
   if (!text) return fallback;
@@ -153,9 +154,9 @@ export class StateTaskStore {
     const jobId = `job_${randomUUID()}`;
     const now = new Date().toISOString();
     await this.database.run(
-      `INSERT INTO jobs(job_id, chat_id, kind, status, payload_json, created_at, updated_at, branch_id, floor_id, message_index, attempts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-      [jobId, input.chatId, STATE_TASK_KIND, input.status ?? 'pending', JSON.stringify(input.payload), now, now, input.branchId, input.floorId, input.messageIndex]
+      `INSERT INTO jobs(job_id, chat_id, kind, status, payload_json, created_at, updated_at, branch_id, floor_id, message_index, attempts, dependency_fingerprint)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      [jobId, input.chatId, STATE_TASK_KIND, input.status ?? 'pending', JSON.stringify(input.payload), now, now, input.branchId, input.floorId, input.messageIndex, input.payload.dependencyFingerprint ?? null]
     );
     const created = await this.getJob(jobId);
     if (!created) throw new Error('state task could not be created');
@@ -206,6 +207,25 @@ export class StateTaskStore {
     return rows.map(toRecord);
   }
 
+  /** Latest succeeded job anywhere in the branch whose dependency (body + previous state + versions) matches. */
+  async findSucceededJobByDependency(branchId: string, dependencyFingerprint: string): Promise<StateTaskRecord | null> {
+    const row = await this.database.get<JobRow>(
+      `SELECT ${SELECT_COLUMNS} FROM jobs
+       WHERE branch_id = ? AND kind = ? AND status = 'succeeded' AND dependency_fingerprint = ? AND result_json IS NOT NULL
+       ORDER BY finished_at DESC, created_at DESC LIMIT 1`,
+      [branchId, STATE_TASK_KIND, dependencyFingerprint]
+    );
+    return row ? toRecord(row) : null;
+  }
+
+  async listActiveJobs(chatId: string, branchId: string): Promise<StateTaskRecord[]> {
+    const rows = await this.database.all<JobRow>(
+      `SELECT ${SELECT_COLUMNS} FROM jobs WHERE chat_id = ? AND branch_id = ? AND kind = ? AND status IN ('pending', 'running') ORDER BY message_index ASC, created_at ASC`,
+      [chatId, branchId, STATE_TASK_KIND]
+    );
+    return rows.map(toRecord);
+  }
+
   async nextPendingJob(chatId: string): Promise<StateTaskRecord | null> {
     const row = await this.database.get<JobRow>(
       `SELECT ${SELECT_COLUMNS} FROM jobs WHERE chat_id = ? AND kind = ? AND status = 'pending' ORDER BY message_index ASC, created_at ASC LIMIT 1`,
@@ -223,7 +243,10 @@ export class StateTaskStore {
     };
     if (patch.status !== undefined) assign('status', patch.status);
     if (patch.attempts !== undefined) assign('attempts', patch.attempts);
-    if (patch.payload !== undefined) assign('payload_json', JSON.stringify(patch.payload));
+    if (patch.payload !== undefined) {
+      assign('payload_json', JSON.stringify(patch.payload));
+      assign('dependency_fingerprint', patch.payload.dependencyFingerprint ?? null);
+    }
     if (patch.result !== undefined) assign('result_json', patch.result === null ? null : JSON.stringify(patch.result));
     if (patch.errorCode !== undefined) assign('error_code', patch.errorCode);
     if (patch.errorMessage !== undefined) assign('error_message', patch.errorMessage);
@@ -243,14 +266,20 @@ export class StateTaskStore {
       `SELECT ${SELECT_COLUMNS} FROM jobs WHERE kind = ? AND status IN ('pending', 'running') AND floor_id IN (${placeholders})`,
       [STATE_TASK_KIND, ...unique]
     );
+    const records = rows.map(toRecord);
+    await this.cancelJobsByIds(records.map(record => record.jobId), reason);
+    return records;
+  }
+
+  async cancelJobsByIds(jobIds: string[], reason: string): Promise<void> {
     const now = new Date().toISOString();
-    for (const row of rows) {
+    for (const jobId of new Set(jobIds)) {
       await this.database.run(
-        `UPDATE jobs SET status = 'cancelled', error_code = 'WM_TASK_CANCELLED', error_message = ?, finished_at = ?, updated_at = ? WHERE job_id = ?`,
-        [reason, now, now, row.job_id]
+        `UPDATE jobs SET status = 'cancelled', error_code = 'WM_TASK_CANCELLED', error_message = ?, finished_at = ?, updated_at = ?
+         WHERE job_id = ? AND kind = ? AND status IN ('pending', 'running')`,
+        [reason, now, now, jobId, STATE_TASK_KIND]
       );
     }
-    return rows.map(toRecord);
   }
 
   /** Returns interrupted (running) jobs to pending after a restart and reports the affected chats. */
