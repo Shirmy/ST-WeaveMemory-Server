@@ -21,7 +21,8 @@
     "test:state-diff": "tsc -p tsconfig.test.json && node .test-dist/tests/state-diff-acceptance.js",
     "test:state-chain": "tsc -p tsconfig.test.json && node .test-dist/tests/state-chain-acceptance.js",
     "test:state-chain-1000": "tsc -p tsconfig.test.json && node .test-dist/tests/state-chain-1000-acceptance.js",
-    "test:state-rebuild": "tsc -p tsconfig.test.json && node .test-dist/tests/state-rebuild-acceptance.js"
+    "test:state-rebuild": "tsc -p tsconfig.test.json && node .test-dist/tests/state-rebuild-acceptance.js",
+    "test:generation-gate": "tsc -p tsconfig.test.json && node .test-dist/tests/generation-gate-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",

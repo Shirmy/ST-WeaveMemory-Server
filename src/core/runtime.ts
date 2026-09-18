@@ -3,6 +3,10 @@ import type { EnqueueOutcome, StateTaskRunner } from '../ai/state-task-runner';
 import type { ChatReconcileRequest, CreateBranchRequest, FloorFinalizeRequest, GenerationPrepareRequest, HostChatBindingRequest } from '../protocol';
 import { floorKeyFor, type MemoryStore } from '../storage/types';
 import { PerChatQueue } from '../queue/per-chat-queue';
+import type { ChainPosition, StateChainEngine, TrustedPrefix } from '../state/chain-engine';
+
+const GENERATION_GATE_TIMEOUT_MS = 45_000;
+const GENERATION_GATE_POLL_MS = 150;
 
 export type FloorFinalizeResult = {
   accepted: boolean;
@@ -15,7 +19,8 @@ export class MemoryRuntime {
   constructor(
     private readonly store: MemoryStore,
     private readonly queue: PerChatQueue,
-    private readonly stateTasks: StateTaskRunner | null = null
+    private readonly stateTasks: StateTaskRunner | null = null,
+    private readonly chain: StateChainEngine | null = null
   ) {}
 
   async finalizeFloor(input: FloorFinalizeRequest): Promise<FloorFinalizeResult> {
@@ -77,13 +82,46 @@ export class MemoryRuntime {
   }
 
   async prepareGeneration(input: GenerationPrepareRequest) {
-    void input;
-    // Phase 7: state backlog gate -> recall -> token packing -> current-state projection.
-    return {
-      ready: true,
-      longMemory: '',
-      currentState: '',
-      diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: 0 }
-    };
+    const branchId = await this.store.getOrCreateActiveBranch(input.chatId);
+    if (!this.chain || !this.stateTasks) return this.gateFailure('STATE_SYNC_FAILED', null);
+    const deadline = Date.now() + GENERATION_GATE_TIMEOUT_MS;
+    let resyncStarted = false;
+    while (true) {
+      const prefix = await this.chain.trustedPrefix(input.chatId, branchId);
+      const previous = previousAiPosition(prefix, input.latestUserIndex);
+      if (!previous || previous.valid) {
+        return { ready: true, longMemory: '', currentState: '', diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: 0, stateNodeId: previous?.node?.stateNodeId } };
+      }
+      const status = await this.positionStatus(previous, input.chatId);
+      if (!resyncStarted && (status === 'failed' || status === 'missing' || status === 'stale')) {
+        resyncStarted = true;
+        try { await this.stateTasks.rebuild({ chatId: input.chatId, branchId }); }
+        catch (error) {
+          console.warn('[WeaveMemory] generation gate resync failed', error);
+          return this.gateFailure('STATE_SYNC_FAILED', previous.node?.stateNodeId ?? null);
+        }
+      }
+      if (resyncStarted && status !== 'pending') return this.gateFailure('STATE_SYNC_FAILED', previous.node?.stateNodeId ?? null);
+      if (Date.now() >= deadline) return this.gateFailure(status === 'pending' ? 'STATE_SYNC_PENDING_TIMEOUT' : 'STATE_SYNC_FAILED', previous.node?.stateNodeId ?? null);
+      await wait(GENERATION_GATE_POLL_MS);
+    }
+  }
+
+  private async positionStatus(position: ChainPosition, chatId: string): Promise<'pending' | 'failed' | 'missing' | 'stale'> {
+    const tasks = await this.stateTasks!.listTasks({ chatId, floorId: position.floorId, limit: 20 });
+    if (tasks.some(task => task.status === 'pending' || task.status === 'running')) return 'pending';
+    if (tasks.at(-1)?.status === 'failed') return 'failed';
+    return position.node ? 'stale' : 'missing';
+  }
+
+  private gateFailure(reason: string, stateNodeId: string | null) {
+    return { ready: false, reason, longMemory: '', currentState: '', diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: 0, stateNodeId: stateNodeId ?? undefined } };
   }
 }
+
+function previousAiPosition(prefix: TrustedPrefix, latestUserIndex: number | null): ChainPosition | null {
+  const candidates = latestUserIndex === null ? prefix.positions : prefix.positions.filter(position => position.messageIndex < latestUserIndex);
+  return candidates.at(-1) ?? null;
+}
+
+function wait(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)); }

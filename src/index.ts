@@ -61,7 +61,7 @@ export async function init(router: Router): Promise<void> {
     chain
   });
   stateTasks = runner;
-  const activeRuntime = new MemoryRuntime(store, queue, runner);
+  const activeRuntime = new MemoryRuntime(store, queue, runner, chain);
   registerRoutes(router, activeRuntime, openedDatabase);
   registerAiRoutes(router, { aiConfig, client, stateTasks: runner });
   registerStateRoutes(router, { stateTasks: runner, chain, store });
