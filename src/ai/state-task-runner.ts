@@ -121,7 +121,9 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 /**
  * Runs state-analysis jobs: one job at a time per chat (state chains are sequential), with the
  * LLM call outside the chat queue so reconcile / finalize requests are never blocked by a slow
- * model. Every result is re-verified against the live floor before it is written.
+ * model. Before a result is written, the live floor and the full dependency fingerprint
+ * (body + previous state + protocol + schema + prompt version) are re-verified; any drift
+ * marks the job stale and discards the candidate.
  */
 export class StateTaskRunner {
   private readonly loops = new Map<string, Promise<void>>();
@@ -329,7 +331,7 @@ export class StateTaskRunner {
       return null;
     }
     if (!floor.active) {
-      await tasks.updateJob(current.jobId, { status: 'cancelled', errorCode: 'WM_TASK_CANCELLED', errorMessage: 'floor is not active', finishedAt: now });
+      await tasks.updateJob(current.jobId, { status: 'stale', errorCode: 'WM_TASK_STALE', errorMessage: 'floor is no longer the active variant', finishedAt: now });
       return null;
     }
     const binding = await aiConfig.resolveRole('state');
@@ -451,11 +453,13 @@ export class StateTaskRunner {
   }
 
   private async commit(prepared: Prepared, outcome: AnalysisOutcome): Promise<void> {
-    const { tasks, store, aiConfig } = this.deps;
+    const { tasks, store, aiConfig, context } = this.deps;
     const jobId = prepared.job.jobId;
     const current = await tasks.getJob(jobId);
     if (!current || current.status !== 'running') return;
     const now = new Date().toISOString();
+    const discardAsStale = (message: string): Promise<StateTaskRecord | null> =>
+      tasks.updateJob(jobId, { status: 'stale', attempts: outcome.attempts, errorCode: 'WM_TASK_STALE', errorMessage: `${message}; result discarded`, finishedAt: now });
     if (!outcome.ok) {
       if (outcome.error.code === 'WM_TASK_CANCELLED') {
         // A shutdown interrupts the job; leave it `running` so the next boot retries it.
@@ -467,14 +471,32 @@ export class StateTaskRunner {
       await store.updateFloorStatus(current.floorId, 'failed');
       return;
     }
+    // Roadmap §54: re-verify the live floor and the full dependency fingerprint (§13) before accepting the candidate.
     const floor = await store.getFloor(current.floorId);
     if (!floor || floor.contentFingerprint !== current.payload.bodyFingerprint) {
-      await tasks.updateJob(jobId, { status: 'stale', attempts: outcome.attempts, errorCode: 'WM_TASK_STALE', errorMessage: 'floor changed during analysis; result discarded', finishedAt: now });
+      await discardAsStale('floor changed during analysis');
       return;
     }
+    if (!floor.active) {
+      await discardAsStale('floor is no longer the active variant');
+      return;
+    }
+    const loaded = await context.load({ chatId: current.chatId, branchId: current.branchId, floorId: current.floorId, messageIndex: current.messageIndex });
     const activePrompt = await aiConfig.getActivePrompt('state');
-    if (activePrompt.promptVersion !== prepared.promptVersion) {
-      await tasks.updateJob(jobId, { status: 'stale', attempts: outcome.attempts, errorCode: 'WM_TASK_STALE', errorMessage: 'state prompt changed during analysis; result discarded', finishedAt: now });
+    const currentDependency = dependencyFingerprint({
+      bodyFingerprint: floor.contentFingerprint,
+      previousStateFingerprint: loaded.previousStateFingerprint,
+      protocolVersion: STATE_PROTOCOL_VERSION,
+      schemaVersion: STATE_SCHEMA_VERSION,
+      promptVersion: activePrompt.promptVersion
+    });
+    if (currentDependency !== current.payload.dependencyFingerprint) {
+      const cause = activePrompt.promptVersion !== current.payload.statePromptVersion
+        ? 'state prompt changed during analysis'
+        : loaded.previousStateFingerprint !== current.payload.previousStateFingerprint
+          ? 'previous effective state changed during analysis'
+          : 'dependency fingerprint changed during analysis';
+      await discardAsStale(cause);
       return;
     }
     await tasks.updateJob(jobId, { status: 'succeeded', attempts: outcome.attempts, result: outcome.result, errorCode: null, errorMessage: null, finishedAt: now });

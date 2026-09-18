@@ -7,11 +7,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { OpenAiCompatibleClient } from '../src/ai/openai-compatible-client';
 import { SecretBox } from '../src/ai/secret-box';
-import { EmptyStateContextProvider } from '../src/ai/state-context';
+import { emptyRelevantState, type StateAnalysisContext, type StateContextProvider, type StateContextTarget } from '../src/ai/state-context';
 import { StateTaskRunner } from '../src/ai/state-task-runner';
-import { fingerprint } from '../src/core/fingerprint';
+import { dependencyFingerprint, fingerprint } from '../src/core/fingerprint';
 import { MemoryRuntime } from '../src/core/runtime';
+import { STATE_PROTOCOL_VERSION } from '../src/protocol';
 import { PerChatQueue } from '../src/queue/per-chat-queue';
+import { STATE_SCHEMA_VERSION } from '../src/state/schema';
 import { AiConfigStore } from '../src/storage/ai-config-store';
 import { ensureStorageDirectories, resolveStoragePaths } from '../src/storage/data-directory';
 import { runMigrations } from '../src/storage/migrations';
@@ -44,6 +46,20 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 
 function isDone(job: StateTaskRecord): boolean {
   return job.status !== 'pending' && job.status !== 'running';
+}
+
+/** Stand-in for the Phase 5 snapshot provider: the test flips the previous-state fingerprint at will. */
+class MutableContextProvider implements StateContextProvider {
+  previousStateFingerprint: string | null = null;
+
+  async load(target: StateContextTarget): Promise<StateAnalysisContext> {
+    return {
+      previousRelevantState: emptyRelevantState(target.branchId),
+      previousStateFingerprint: this.previousStateFingerprint,
+      lockedPaths: [],
+      knownCharacters: []
+    };
+  }
 }
 
 async function waitFor(tasks: StateTaskStore, jobId: string, predicate: (job: StateTaskRecord) => boolean, timeoutMs = 15000): Promise<StateTaskRecord> {
@@ -97,9 +113,10 @@ async function main(): Promise<void> {
     const tasks = new StateTaskStore(database);
     const queue = new PerChatQueue();
     const client = new OpenAiCompatibleClient();
-    const buildRunner = (): StateTaskRunner => new StateTaskRunner({ store, tasks, aiConfig, client, queue, context: new EmptyStateContextProvider(), backoffMs: () => 10 });
+    const contextProvider = new MutableContextProvider();
+    const buildRunner = (): StateTaskRunner => new StateTaskRunner({ store, tasks, aiConfig, client, queue, context: contextProvider, backoffMs: () => 10 });
     runner = buildRunner();
-    const runtime = new MemoryRuntime(store, queue, runner);
+    let runtime = new MemoryRuntime(store, queue, runner);
 
     await aiConfig.saveChannel({ channelId: 'mock', name: 'mock', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'sk-test' });
     await aiConfig.saveBinding('state', 'mock', 'state-model');
@@ -278,6 +295,7 @@ async function main(): Promise<void> {
     });
     await runner.shutdown();
     runner = buildRunner();
+    runtime = new MemoryRuntime(store, queue, runner);
     reply('{"story":{"now":{"currentTime":"after restart"}}}');
     await runner.resumePending();
     const job13 = await finished(interrupted.jobId);
@@ -293,6 +311,50 @@ async function main(): Promise<void> {
     assert.equal(adHoc.model, 'state-model');
     assert.ok(((requests.at(-1)?.messages as Message[])[1].content).includes('"characterId":"alice"'));
     assert.equal((await runner.listTasks({ chatId: CHAT_ID })).length, taskCountBefore);
+
+    // 15. the previous effective state changes while the model is thinking -> dependency mismatch -> stale
+    contextProvider.previousStateFingerprint = 'sha256:previous-state-A';
+    scripted.push((_body, res) => {
+      setTimeout(() => json(res, 200, completion('{"story":{"now":{"currentTime":"computed against state A"}}}')), 400);
+    });
+    const dependentContent = 'Floor twenty depends on the state left by floor nineteen.';
+    const dependent = await finalize(20, dependentContent);
+    assert.equal(dependent.stateTask?.outcome, 'queued');
+    const runningDependent = await waitFor(tasks, dependent.stateTask!.jobId, job => job.status === 'running');
+    assert.equal(runningDependent.payload.previousStateFingerprint, 'sha256:previous-state-A');
+    contextProvider.previousStateFingerprint = 'sha256:previous-state-B';
+    const job15 = await finished(dependent.stateTask!.jobId);
+    assert.equal(job15.status, 'stale');
+    assert.equal(job15.errorCode, 'WM_TASK_STALE');
+    assert.match(job15.errorMessage ?? '', /previous effective state changed/);
+    assert.equal(job15.result, null);
+    assert.equal((await store.getFloor(dependent.floorKey))?.status, 'pending');
+
+    // 16. the same floor under the new previous state is not reused; it is analysed again and accepted
+    reply('{"story":{"now":{"currentTime":"computed against state B"}}}');
+    const dependentAgain = await finalize(20, dependentContent);
+    assert.equal(dependentAgain.stateTask?.outcome, 'queued');
+    assert.notEqual(dependentAgain.stateTask?.jobId, dependent.stateTask?.jobId);
+    const job16 = await finished(dependentAgain.stateTask!.jobId);
+    assert.equal(job16.status, 'succeeded', job16.errorMessage ?? '');
+    assert.equal(job16.result?.candidate.story?.now?.currentTime, 'computed against state B');
+    assert.equal(job16.payload.previousStateFingerprint, 'sha256:previous-state-B');
+    assert.equal(job16.payload.dependencyFingerprint, dependencyFingerprint({
+      bodyFingerprint: fingerprint(dependentContent),
+      previousStateFingerprint: 'sha256:previous-state-B',
+      protocolVersion: STATE_PROTOCOL_VERSION,
+      schemaVersion: STATE_SCHEMA_VERSION,
+      promptVersion: (await aiConfig.getActivePrompt('state')).promptVersion
+    }));
+    assert.equal((await store.getFloor(dependentAgain.floorKey))?.status, 'synced');
+
+    // 17. control case: previous state unchanged during analysis -> normal success
+    reply('{}');
+    const stableDependent = await finalize(21, 'Floor twenty-one continues quietly.');
+    const job17 = await finished(stableDependent.stateTask!.jobId);
+    assert.equal(job17.status, 'succeeded', job17.errorMessage ?? '');
+    assert.equal(job17.payload.previousStateFingerprint, 'sha256:previous-state-B');
+    assert.equal((await store.getFloor(stableDependent.floorKey))?.status, 'synced');
 
     assert.equal(scripted.length, 0);
     console.log('Phase 4 state task acceptance passed');
