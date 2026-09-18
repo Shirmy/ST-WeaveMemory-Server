@@ -214,6 +214,59 @@ CREATE TABLE IF NOT EXISTS host_chat_bindings (
 CREATE INDEX IF NOT EXISTS idx_host_chat_bindings_branch
   ON host_chat_bindings(branch_id);
 `
+}, {
+  version: 4,
+  name: 'ai-config-and-state-tasks',
+  sql: `
+CREATE TABLE IF NOT EXISTS ai_channels (
+  channel_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  api_type TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  api_key_encrypted TEXT,
+  timeout INTEGER,
+  headers_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_model_bindings (
+  role TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  model TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (channel_id) REFERENCES ai_channels(channel_id)
+);
+
+CREATE TABLE IF NOT EXISTS prompt_presets (
+  preset_id TEXT PRIMARY KEY,
+  prompt_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  content_json TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_presets_type
+  ON prompt_presets(prompt_type);
+
+ALTER TABLE jobs ADD COLUMN branch_id TEXT;
+ALTER TABLE jobs ADD COLUMN floor_id TEXT;
+ALTER TABLE jobs ADD COLUMN message_index INTEGER;
+ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN result_json TEXT;
+ALTER TABLE jobs ADD COLUMN error_code TEXT;
+ALTER TABLE jobs ADD COLUMN error_message TEXT;
+ALTER TABLE jobs ADD COLUMN started_at TEXT;
+ALTER TABLE jobs ADD COLUMN finished_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_chat_kind_status
+  ON jobs(chat_id, kind, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_floor
+  ON jobs(floor_id);
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

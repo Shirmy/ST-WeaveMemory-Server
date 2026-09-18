@@ -1,7 +1,10 @@
 import type { Router } from 'express';
+import { registerAiRoutes } from './api/ai-routes';
 import { registerRoutes } from './api/routes';
+import { SecretBox } from './ai/secret-box';
 import { MemoryRuntime } from './core/runtime';
 import { PerChatQueue } from './queue/per-chat-queue';
+import { AiConfigStore } from './storage/ai-config-store';
 import { ensureStorageDirectories, resolveStoragePaths } from './storage/data-directory';
 import { createDailyBackup, runMigrations } from './storage/migrations';
 import { SqliteDatabase } from './storage/sqlite-database';
@@ -17,9 +20,13 @@ export async function init(router: Router): Promise<void> {
   await ensureStorageDirectories(storagePaths);
   const openedDatabase = await SqliteDatabase.open(storagePaths.databasePath);
   database = openedDatabase;
+  let aiConfig: AiConfigStore;
   try {
     await runMigrations(openedDatabase, storagePaths);
     await createDailyBackup(openedDatabase, storagePaths);
+    const secretBox = await SecretBox.load(storagePaths.secretKeyPath);
+    aiConfig = new AiConfigStore(openedDatabase, secretBox);
+    await aiConfig.ensureBuiltinPresets();
   } catch (error) {
     await openedDatabase.close();
     database = null;
@@ -27,6 +34,7 @@ export async function init(router: Router): Promise<void> {
   }
   const activeRuntime = new MemoryRuntime(new SqliteStore(openedDatabase), new PerChatQueue());
   registerRoutes(router, activeRuntime, openedDatabase);
+  registerAiRoutes(router, { aiConfig });
   console.log('[WeaveMemory] server v0.1.0 loaded');
 }
 

@@ -3,11 +3,7 @@ import type { Router } from 'express';
 import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type ActivateBranchRequest, type ChatReconcileRequest, type CreateBranchRequest, type FloorFinalizeRequest, type GenerationPrepareRequest, type HostChatBindingRequest } from '../protocol';
 import { MemoryRuntime } from '../core/runtime';
 import type { SqliteDatabase } from '../storage/sqlite-database';
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
-  return value;
-}
+import { requiredString } from './request-utils';
 
 export function registerRoutes(router: Router, runtime: MemoryRuntime, database: SqliteDatabase): void {
   const json = bodyParser.json({ limit: '2mb' });
@@ -22,7 +18,7 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
         apiVersion: API_VERSION,
         schemaVersion: SCHEMA_VERSION,
         database: databaseHealth,
-        capabilities: ['generation-gate', 'floor-binding', 'persistent-storage', 'state-chain-planned', 'long-memory-planned']
+        capabilities: ['generation-gate', 'floor-binding', 'persistent-storage', 'ai-channels', 'prompt-presets', 'state-chain-planned', 'long-memory-planned']
       });
     } catch (error) {
       return res.status(503).json({

@@ -14,7 +14,8 @@
     "test:branch": "tsc -p tsconfig.test.json && node .test-dist/tests/branch-acceptance.js",
     "test:branch-fork": "tsc -p tsconfig.test.json && node .test-dist/tests/branch-fork-acceptance.js",
     "test:host-branch": "tsc -p tsconfig.test.json && node .test-dist/tests/host-branch-binding-acceptance.js",
-    "test:state-schema": "tsc -p tsconfig.test.json && node .test-dist/tests/state-schema-acceptance.js"
+    "test:state-schema": "tsc -p tsconfig.test.json && node .test-dist/tests/state-schema-acceptance.js",
+    "test:ai-config": "tsc -p tsconfig.test.json && node .test-dist/tests/ai-config-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",

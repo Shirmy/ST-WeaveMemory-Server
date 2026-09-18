@@ -7,6 +7,8 @@ export type StoragePaths = {
   root: string;
   databasePath: string;
   backupDirectory: string;
+  /** Key material for encrypting API keys at rest; intentionally outside the backup set. */
+  secretKeyPath: string;
 };
 
 export function resolveStoragePaths(): StoragePaths {
@@ -19,7 +21,8 @@ export function resolveStoragePaths(): StoragePaths {
   return {
     root,
     databasePath: path.join(root, 'weavememory.sqlite'),
-    backupDirectory: path.join(root, 'backups')
+    backupDirectory: path.join(root, 'backups'),
+    secretKeyPath: path.join(root, 'secret.key')
   };
 }
 
