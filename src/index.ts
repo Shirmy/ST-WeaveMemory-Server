@@ -1,8 +1,11 @@
 import type { Router } from 'express';
 import { registerAiRoutes } from './api/ai-routes';
 import { registerRoutes } from './api/routes';
+import { registerStateRoutes } from './api/state-routes';
 import { OpenAiCompatibleClient } from './ai/openai-compatible-client';
 import { SecretBox } from './ai/secret-box';
+import { EmptyStateContextProvider } from './ai/state-context';
+import { StateTaskRunner } from './ai/state-task-runner';
 import { MemoryRuntime } from './core/runtime';
 import { PerChatQueue } from './queue/per-chat-queue';
 import { AiConfigStore } from './storage/ai-config-store';
@@ -10,11 +13,13 @@ import { ensureStorageDirectories, resolveStoragePaths } from './storage/data-di
 import { createDailyBackup, runMigrations } from './storage/migrations';
 import { SqliteDatabase } from './storage/sqlite-database';
 import { SqliteStore } from './storage/sqlite-store';
+import { StateTaskStore } from './storage/state-task-store';
 
 interface PluginInfo { id: string; name: string; description: string; }
 interface Plugin { init: (router: Router) => Promise<void>; exit: () => Promise<void>; info: PluginInfo; }
 
 let database: SqliteDatabase | null = null;
+let stateTasks: StateTaskRunner | null = null;
 
 export async function init(router: Router): Promise<void> {
   const storagePaths = resolveStoragePaths();
@@ -33,13 +38,29 @@ export async function init(router: Router): Promise<void> {
     database = null;
     throw error;
   }
-  const activeRuntime = new MemoryRuntime(new SqliteStore(openedDatabase), new PerChatQueue());
+  const store = new SqliteStore(openedDatabase);
+  const queue = new PerChatQueue();
+  const client = new OpenAiCompatibleClient();
+  const runner = new StateTaskRunner({
+    store,
+    tasks: new StateTaskStore(openedDatabase),
+    aiConfig,
+    client,
+    queue,
+    context: new EmptyStateContextProvider()
+  });
+  stateTasks = runner;
+  const activeRuntime = new MemoryRuntime(store, queue, runner);
   registerRoutes(router, activeRuntime, openedDatabase);
-  registerAiRoutes(router, { aiConfig, client: new OpenAiCompatibleClient() });
+  registerAiRoutes(router, { aiConfig, client, stateTasks: runner });
+  registerStateRoutes(router, { stateTasks: runner });
+  await runner.resumePending();
   console.log('[WeaveMemory] server v0.1.0 loaded');
 }
 
 export async function exit(): Promise<void> {
+  await stateTasks?.shutdown();
+  stateTasks = null;
   await database?.close();
   database = null;
   console.log('[WeaveMemory] server stopped');

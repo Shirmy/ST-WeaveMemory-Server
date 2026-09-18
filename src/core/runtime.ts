@@ -1,13 +1,25 @@
 import { fingerprint } from './fingerprint';
+import type { EnqueueOutcome, StateTaskRunner } from '../ai/state-task-runner';
 import type { ChatReconcileRequest, CreateBranchRequest, FloorFinalizeRequest, GenerationPrepareRequest, HostChatBindingRequest } from '../protocol';
 import { floorKeyFor, type MemoryStore } from '../storage/types';
 import { PerChatQueue } from '../queue/per-chat-queue';
 
-export class MemoryRuntime {
-  constructor(private readonly store: MemoryStore, private readonly queue: PerChatQueue) {}
+export type FloorFinalizeResult = {
+  accepted: boolean;
+  floorKey: string;
+  /** Null when no state task runner is attached (unit tests of the floor layer). */
+  stateTask: EnqueueOutcome | null;
+};
 
-  async finalizeFloor(input: FloorFinalizeRequest): Promise<{ accepted: boolean; floorKey: string }> {
-    return this.queue.run(input.chatId, async () => {
+export class MemoryRuntime {
+  constructor(
+    private readonly store: MemoryStore,
+    private readonly queue: PerChatQueue,
+    private readonly stateTasks: StateTaskRunner | null = null
+  ) {}
+
+  async finalizeFloor(input: FloorFinalizeRequest): Promise<FloorFinalizeResult> {
+    const result = await this.queue.run(input.chatId, async () => {
       const contentFingerprint = fingerprint(input.content);
       const branchId = input.branchId ?? await this.store.getOrCreateActiveBranch(input.chatId);
       const floorKey = floorKeyFor(input.chatId, branchId, input.messageIndex, input.swipeId, contentFingerprint);
@@ -25,13 +37,29 @@ export class MemoryRuntime {
         createdAt: now,
         updatedAt: now
       });
-      // v0.2: enqueue unified 谱 / 迹 / 事 state analysis here.
-      return { accepted: true, floorKey };
+      const stateTask = this.stateTasks
+        ? await this.stateTasks.enqueueForFloor({
+          chatId: input.chatId,
+          branchId,
+          floorId: floorKey,
+          messageIndex: input.messageIndex,
+          swipeId: input.swipeId,
+          bodyFingerprint: contentFingerprint,
+          reason: 'finalize'
+        })
+        : null;
+      return { accepted: true, floorKey, stateTask };
     });
+    this.stateTasks?.kick(input.chatId);
+    return result;
   }
 
   async reconcileChat(input: ChatReconcileRequest) {
-    return this.queue.run(input.chatId, () => this.store.reconcileChat(input));
+    return this.queue.run(input.chatId, async () => {
+      const result = await this.store.reconcileChat(input);
+      await this.stateTasks?.handleReconcile(result);
+      return result;
+    });
   }
 
   async createBranch(input: CreateBranchRequest) {
@@ -48,7 +76,7 @@ export class MemoryRuntime {
 
   async prepareGeneration(input: GenerationPrepareRequest) {
     void input;
-    // v0.2: state backlog gate -> recall -> token packing -> current-state projection.
+    // Phase 7: state backlog gate -> recall -> token packing -> current-state projection.
     return {
       ready: true,
       longMemory: '',

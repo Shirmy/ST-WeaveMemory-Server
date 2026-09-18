@@ -70,6 +70,13 @@ export class SqliteStore implements MemoryStore {
     };
   }
 
+  async updateFloorStatus(floorKey: string, status: FloorRecord['status']): Promise<void> {
+    await this.database.run(
+      'UPDATE floor_variants SET status = ?, updated_at = ? WHERE floor_id = ?',
+      [status, new Date().toISOString(), floorKey]
+    );
+  }
+
   async getOrCreateActiveBranch(chatId: string): Promise<string> {
     const existing = await this.database.get<{ active_branch_id: string | null }>(
       'SELECT active_branch_id FROM chats WHERE chat_id = ?',

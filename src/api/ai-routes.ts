@@ -1,16 +1,17 @@
 import bodyParser from 'body-parser';
-import type { Request, Response, Router } from 'express';
+import type { Router } from 'express';
 import { AiRequestError, OpenAiCompatibleClient } from '../ai/openai-compatible-client';
+import type { StateTaskRunner } from '../ai/state-task-runner';
 import { STATE_TASK_SETTING_LIMITS, type AiChannelInput, type AiChannelRecord, type StateTaskSettings } from '../ai/types';
-import { AiConfigStore, draftChannel, isAiRole } from '../storage/ai-config-store';
-import { ApiError, sendError } from './errors';
-import { bodyObject, optionalInteger, optionalString, requiredString } from './request-utils';
-
-type RouteWork = (req: Request, res: Response) => Promise<unknown>;
+import type { KnownCharacter } from '../state/schema';
+import { AiConfigStore, draftChannel, isAiRole, validatePromptContent } from '../storage/ai-config-store';
+import { ApiError } from './errors';
+import { bodyObject, optionalInteger, optionalString, requiredString, wrapRoute } from './request-utils';
 
 export type AiRouteDependencies = {
   aiConfig: AiConfigStore;
   client: OpenAiCompatibleClient;
+  stateTasks: StateTaskRunner;
 };
 
 /** Timeout used for model lists and connectivity probes when the channel has no explicit timeout. */
@@ -23,16 +24,22 @@ function toApiError(error: unknown, code: string): unknown {
   return error;
 }
 
+function knownCharactersFrom(value: unknown): KnownCharacter[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result: KnownCharacter[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.characterId !== 'string' || typeof record.canonicalName !== 'string') continue;
+    const aliases = Array.isArray(record.aliases) ? record.aliases.filter((alias): alias is string => typeof alias === 'string') : [];
+    result.push({ characterId: record.characterId, canonicalName: record.canonicalName, aliases });
+  }
+  return result;
+}
+
 export function registerAiRoutes(router: Router, deps: AiRouteDependencies): void {
   const json = bodyParser.json({ limit: '2mb' });
-  const { aiConfig, client } = deps;
-  const wrap = (work: RouteWork) => async (req: Request, res: Response) => {
-    try {
-      res.json(await work(req, res));
-    } catch (error) {
-      sendError(res, error);
-    }
-  };
+  const { aiConfig, client, stateTasks } = deps;
 
   /** Resolves a saved channel (optionally with a freshly typed key) or validates an unsaved draft. */
   async function channelForProbe(body: Record<string, unknown>): Promise<AiChannelRecord> {
@@ -50,9 +57,9 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
 
   // ---------------------------------------------------------------- channels
 
-  router.get('/ai/channels', wrap(async () => ({ channels: await aiConfig.listChannels() })));
+  router.get('/ai/channels', wrapRoute(async () => ({ channels: await aiConfig.listChannels() })));
 
-  router.post('/ai/channels/save', json, wrap(async req => {
+  router.post('/ai/channels/save', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const input: AiChannelInput = {
       channelId: optionalString(body.channelId, 'channelId'),
@@ -66,12 +73,12 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
     return { channel: await aiConfig.saveChannel(input) };
   }));
 
-  router.post('/ai/channels/delete', json, wrap(async req => {
+  router.post('/ai/channels/delete', json, wrapRoute(async req => {
     const body = bodyObject(req);
     return aiConfig.deleteChannel(requiredString(body.channelId, 'channelId'));
   }));
 
-  router.post('/ai/channels/models', json, wrap(async req => {
+  router.post('/ai/channels/models', json, wrapRoute(async req => {
     const channel = await channelForProbe(bodyObject(req));
     try {
       return { models: await client.listModels(channel, probeTimeoutMs(channel)) };
@@ -80,7 +87,7 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
     }
   }));
 
-  router.post('/ai/channels/test', json, wrap(async req => {
+  router.post('/ai/channels/test', json, wrapRoute(async req => {
     const channel = await channelForProbe(bodyObject(req));
     const startedAt = Date.now();
     try {
@@ -91,7 +98,7 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
     }
   }));
 
-  router.post('/ai/models/test', json, wrap(async req => {
+  router.post('/ai/models/test', json, wrapRoute(async req => {
     const body = bodyObject(req);
     if (!isAiRole(body.role)) throw new ApiError(400, 'WM_INVALID_REQUEST', 'role must be one of summary, state, embedding, rerank');
     const model = requiredString(body.model, 'model').trim();
@@ -105,9 +112,9 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
 
   // ---------------------------------------------------------------- model bindings
 
-  router.get('/ai/model-bindings', wrap(async () => ({ bindings: await aiConfig.getBindings() })));
+  router.get('/ai/model-bindings', wrapRoute(async () => ({ bindings: await aiConfig.getBindings() })));
 
-  router.post('/ai/model-bindings/save', json, wrap(async req => {
+  router.post('/ai/model-bindings/save', json, wrapRoute(async req => {
     const body = bodyObject(req);
     if (body.channelId === null) {
       await aiConfig.clearBinding(body.role);
@@ -118,14 +125,14 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
 
   // ---------------------------------------------------------------- prompt presets
 
-  router.get('/ai/prompts', wrap(async req => {
+  router.get('/ai/prompts', wrapRoute(async req => {
     const promptType = typeof req.query.type === 'string' ? req.query.type : 'state';
     const presets = await aiConfig.listPresets(promptType);
     const active = await aiConfig.getActivePrompt(promptType);
     return { promptType, presets, activePresetId: active.preset.presetId, promptVersion: active.promptVersion };
   }));
 
-  router.post('/ai/prompts/save', json, wrap(async req => {
+  router.post('/ai/prompts/save', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const preset = await aiConfig.savePreset({
       presetId: optionalString(body.presetId, 'presetId'),
@@ -136,28 +143,41 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
     return { preset };
   }));
 
-  router.post('/ai/prompts/delete', json, wrap(async req => {
+  router.post('/ai/prompts/delete', json, wrapRoute(async req => {
     const body = bodyObject(req);
     return aiConfig.deletePreset(requiredString(body.presetId, 'presetId'));
   }));
 
-  router.post('/ai/prompts/activate', json, wrap(async req => {
+  router.post('/ai/prompts/activate', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const active = await aiConfig.activatePreset(body.promptType, requiredString(body.presetId, 'presetId'));
     return { activePresetId: active.preset.presetId, promptVersion: active.promptVersion };
   }));
 
-  router.post('/ai/prompts/reset', json, wrap(async req => {
+  router.post('/ai/prompts/reset', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const active = await aiConfig.resetPrompt(body.promptType);
     return { activePresetId: active.preset.presetId, promptVersion: active.promptVersion };
   }));
 
+  router.post('/ai/prompts/test', json, wrapRoute(async req => {
+    const body = bodyObject(req);
+    const promptType = body.promptType ?? 'state';
+    if (promptType !== 'state') throw new ApiError(400, 'WM_INVALID_REQUEST', 'only the state prompt can be tested in this phase');
+    const result = await stateTasks.runAdHoc({
+      sampleContent: requiredString(body.sampleContent, 'sampleContent'),
+      content: body.content === undefined ? undefined : validatePromptContent(body.content),
+      presetId: optionalString(body.presetId, 'presetId'),
+      knownCharacters: knownCharactersFrom(body.knownCharacters)
+    });
+    return { ok: true, ...result };
+  }));
+
   // ---------------------------------------------------------------- task settings
 
-  router.get('/ai/settings', wrap(async () => ({ state: await aiConfig.getStateTaskSettings(), limits: STATE_TASK_SETTING_LIMITS })));
+  router.get('/ai/settings', wrapRoute(async () => ({ state: await aiConfig.getStateTaskSettings(), limits: STATE_TASK_SETTING_LIMITS })));
 
-  router.post('/ai/settings/save', json, wrap(async req => {
+  router.post('/ai/settings/save', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const state = body.state && typeof body.state === 'object' ? (body.state as Record<string, unknown>) : {};
     const patch: Partial<StateTaskSettings> = {};

@@ -12,6 +12,11 @@ export class InMemoryStore implements MemoryStore {
     return value ? structuredClone(value) : null;
   }
 
+  async updateFloorStatus(floorKey: string, status: FloorRecord['status']): Promise<void> {
+    const value = this.#floors.get(floorKey);
+    if (value) this.#floors.set(floorKey, { ...value, status, updatedAt: new Date().toISOString() });
+  }
+
   async getOrCreateActiveBranch(chatId: string): Promise<string> {
     return `main:${chatId}`;
   }

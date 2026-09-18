@@ -1,9 +1,25 @@
-import type { Request } from 'express';
-import { ApiError } from './errors';
+import type { Request, Response } from 'express';
+import { ApiError, sendError } from './errors';
+
+export type RouteWork = (req: Request, res: Response) => Promise<unknown>;
+
+/** Sends the resolved value as JSON and maps thrown errors to the unified error envelope. */
+export const wrapRoute = (work: RouteWork) => async (req: Request, res: Response): Promise<void> => {
+  try {
+    res.json(await work(req, res));
+  } catch (error) {
+    sendError(res, error);
+  }
+};
 
 export function bodyObject(req: Request): Record<string, unknown> {
   const body: unknown = req.body;
   return body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+}
+
+export function queryObject(req: Request): Record<string, unknown> {
+  const query: unknown = req.query;
+  return query && typeof query === 'object' && !Array.isArray(query) ? (query as Record<string, unknown>) : {};
 }
 
 export function requiredString(value: unknown, name: string): string {

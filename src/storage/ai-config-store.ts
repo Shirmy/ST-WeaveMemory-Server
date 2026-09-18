@@ -116,7 +116,7 @@ function parseHeaders(json: string | null): Record<string, string> {
   }
 }
 
-function validatePromptContent(value: unknown): PromptContent {
+export function validatePromptContent(value: unknown): PromptContent {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AiConfigError('content must be an object with system and task');
   const item = value as Record<string, unknown>;
   if (typeof item.system !== 'string' || typeof item.task !== 'string') throw new AiConfigError('content.system and content.task must be strings');

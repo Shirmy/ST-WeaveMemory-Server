@@ -67,6 +67,7 @@ export function floorKeyFor(chatId: string, branchId: string, messageIndex: numb
 export interface MemoryStore {
   upsertFloor(record: FloorRecord): Promise<void>;
   getFloor(floorKey: string): Promise<FloorRecord | null>;
+  updateFloorStatus(floorKey: string, status: FloorRecord['status']): Promise<void>;
   getOrCreateActiveBranch(chatId: string): Promise<string>;
   reconcileChat(input: ChatReconcileRequest): Promise<ChatReconcileResult>;
   createBranch(input: CreateBranchRequest): Promise<ActivateBranchResult>;

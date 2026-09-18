@@ -112,7 +112,8 @@ export type StateSnapshot = {
 export type StateAnalysisRequest = {
   protocolVersion: number;
   schemaVersion: number;
-  statePromptVersion: number;
+  /** Content hash of the active state prompt preset (see ai/prompts/state-prompt.ts computePromptVersion). */
+  statePromptVersion: string;
   floor: { hostChatId: string; branchId: string; floorId: string; messageIndex: number; swipeId: number | null; content: string };
   previousRelevantState: Pick<StateSnapshot, 'profiles' | 'traces' | 'story'>;
   lockedPaths: string[];
