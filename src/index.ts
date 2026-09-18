@@ -11,7 +11,6 @@ interface PluginInfo { id: string; name: string; description: string; }
 interface Plugin { init: (router: Router) => Promise<void>; exit: () => Promise<void>; info: PluginInfo; }
 
 let database: SqliteDatabase | null = null;
-let runtime: MemoryRuntime | null = null;
 
 export async function init(router: Router): Promise<void> {
   const storagePaths = resolveStoragePaths();
@@ -20,22 +19,20 @@ export async function init(router: Router): Promise<void> {
   database = openedDatabase;
   try {
     await runMigrations(openedDatabase, storagePaths);
-    await createDailyBackup(storagePaths);
+    await createDailyBackup(openedDatabase, storagePaths);
   } catch (error) {
     await openedDatabase.close();
     database = null;
     throw error;
   }
-  const activeRuntime = new MemoryRuntime(new SqliteStore(database), new PerChatQueue());
-  runtime = activeRuntime;
-  registerRoutes(router, activeRuntime, database);
+  const activeRuntime = new MemoryRuntime(new SqliteStore(openedDatabase), new PerChatQueue());
+  registerRoutes(router, activeRuntime, openedDatabase);
   console.log('[WeaveMemory] server v0.1.0 loaded');
 }
 
 export async function exit(): Promise<void> {
   await database?.close();
   database = null;
-  runtime = null;
   console.log('[WeaveMemory] server stopped');
 }
 

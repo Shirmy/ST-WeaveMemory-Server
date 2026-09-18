@@ -47,6 +47,16 @@ export class SqliteDatabase {
     };
   }
 
+  async checkpoint(): Promise<void> {
+    const result = await get<{ busy: number; log: number; checkpointed: number }>(
+      this.database,
+      'PRAGMA wal_checkpoint(TRUNCATE)'
+    );
+    if (Number(result?.busy ?? 0) !== 0) {
+      throw new Error('SQLite WAL checkpoint is busy; backup was not created');
+    }
+  }
+
   async close(): Promise<void> {
     await close(this.database);
   }

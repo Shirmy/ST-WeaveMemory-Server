@@ -27,7 +27,8 @@ export class MemoryRuntime {
     });
   }
 
-  async prepareGeneration(_input: GenerationPrepareRequest) {
+  async prepareGeneration(input: GenerationPrepareRequest) {
+    void input;
     // v0.2: state backlog gate -> recall -> token packing -> current-state projection.
     return {
       ready: true,

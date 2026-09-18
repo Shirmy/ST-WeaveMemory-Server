@@ -191,7 +191,7 @@ export async function runMigrations(database: SqliteDatabase, paths: StoragePath
   }
   if (currentVersion === latestVersion) return;
 
-  await createBackup(paths, currentVersion);
+  await createBackup(database, paths, currentVersion);
   await database.transaction(async () => {
     for (const migration of migrations.filter(item => item.version > currentVersion)) {
       await database.exec(migration.sql);
@@ -209,7 +209,8 @@ export async function runMigrations(database: SqliteDatabase, paths: StoragePath
   });
 }
 
-export async function createDailyBackup(paths: StoragePaths): Promise<void> {
+export async function createDailyBackup(database: SqliteDatabase, paths: StoragePaths): Promise<void> {
+  await database.checkpoint();
   try {
     const stat = await fs.stat(paths.databasePath);
     if (!stat.isFile() || stat.size === 0) return;
@@ -228,7 +229,8 @@ export async function createDailyBackup(paths: StoragePaths): Promise<void> {
   await pruneBackups(paths);
 }
 
-async function createBackup(paths: StoragePaths, currentVersion: number): Promise<void> {
+async function createBackup(database: SqliteDatabase, paths: StoragePaths, currentVersion: number): Promise<void> {
+  await database.checkpoint();
   try {
     const stat = await fs.stat(paths.databasePath);
     if (!stat.isFile() || stat.size === 0) return;
