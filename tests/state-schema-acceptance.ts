@@ -3,7 +3,9 @@ import {
   normalizeStateAnalysisResponse,
   normalizeStateSnapshot,
   resolveCharacterIdentity,
+  STATE_ANALYSIS_RESPONSE_JSON_SCHEMA,
   STATE_SCHEMA_VERSION,
+  type StateAnalysisCandidate,
   StateSchemaError,
   validateManualStateEdit,
   validateStateSnapshot
@@ -47,11 +49,19 @@ function main(): void {
   expectSchemaError(() => normalizeStateAnalysisResponse({ traces: { alice: { affinity: { inner: 3 } } } }));
   expectSchemaError(() => normalizeStateAnalysisResponse({ story: { plotPlans: 'invalid' } }));
   expectSchemaError(() => normalizeStateAnalysisResponse({ story: { now: { upcoming: [{ id: 'event', title: 'Event', expectedTime: 123 }] } } }));
-  expectSchemaError(() => normalizeStateAnalysisResponse({ story: { now: { ongoing: [{ id: 'event', title: 'Event', relatedCharacterIds: 'alice' }] } } }));
+  assert.throws(() => normalizeStateAnalysisResponse({ story: { now: { ongoing: [{ id: 'event', title: 'Event', relatedCharacterIds: 'alice' }] } } }), { name: 'StateSchemaError', message: 'response.story.now.ongoing[0].relatedCharacterIds: must be an array' });
   expectSchemaError(() => normalizeStateAnalysisResponse({ profiles: { alice: { basic: { unknownField: true } } } }));
   expectSchemaError(() => normalizeStateAnalysisResponse({ profiles: { alice: { basic: { age: '31' } } } }, ['profiles.alice.basic.age']));
   const candidate = normalizeStateAnalysisResponse({ profiles: { alice: { aliases: [] } }, touchedCharacterIds: ['alice'], notes: [] });
   assert.deepEqual(candidate.profiles?.alice.aliases, []);
+  const affinityInner: StateAnalysisCandidate = { traces: { alice: { affinity: { inner: 1 } } } };
+  const affinityOuter: StateAnalysisCandidate = { traces: { alice: { affinity: { outer: -1 } } } };
+  const currentTime: StateAnalysisCandidate = { story: { now: { currentTime: 'Day 2' } } };
+  assert.equal(normalizeStateAnalysisResponse(affinityInner).traces?.alice.affinity?.inner, 1);
+  assert.equal(normalizeStateAnalysisResponse(affinityOuter).traces?.alice.affinity?.outer, -1);
+  assert.equal(normalizeStateAnalysisResponse(currentTime).story?.now?.currentTime, 'Day 2');
+  assert.equal('required' in STATE_ANALYSIS_RESPONSE_JSON_SCHEMA.$defs.trace.properties.affinity, false);
+  assert.equal('required' in STATE_ANALYSIS_RESPONSE_JSON_SCHEMA.$defs.story.properties.now, false);
   assert.equal(resolveCharacterIdentity('ally', [{ characterId: 'alice', canonicalName: 'Alice', aliases: ['Ally'] }]), 'alice');
   validateManualStateEdit({ branchId: 'branch-A', target: 'profile', entityId: 'alice', path: 'basic.age', value: '30', source: { ...source, sourceType: 'manual', sourceFloorIds: [], sourceHostChatIds: ['host-A'] }, updatedAt: '2026-09-19T00:00:00.000Z' }, { branchId: 'branch-A' });
   expectSchemaError(() => validateManualStateEdit({ branchId: 'branch-A', target: 'profile', entityId: 'alice', path: 'basic.age', value: '30', source, updatedAt: '2026-09-19T00:00:00.000Z' }));

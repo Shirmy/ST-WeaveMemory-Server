@@ -119,13 +119,56 @@ export type StateAnalysisRequest = {
   knownCharacters: Array<{ characterId: string; canonicalName: string; aliases: string[] }>;
 };
 
-export type StateAnalysisResponse = {
-  profiles?: Record<string, Partial<CharacterProfile>>;
-  traces?: Record<string, Partial<CharacterTrace>>;
-  story?: Partial<StoryState>;
+export type StateAnalysisBasicCandidate = { gender?: string; age?: string; birthday?: string; race?: string; notes?: string };
+export type StateAnalysisAppearanceCandidate = { height?: string; build?: string; face?: string; hair?: string; eyes?: string; distinctiveFeatures?: string[]; clothingStyle?: string; notes?: string };
+export type StateAnalysisIdentityCandidate = { occupation?: string; organizations?: string[]; socialIdentity?: string[]; background?: string; importantRelations?: string[] };
+export type StateAnalysisPersonalityCandidate = { coreTraits?: string[]; behaviorStyle?: string[]; expressionHabits?: string[]; likes?: string[]; dislikes?: string[]; principles?: string[] };
+export type StateAnalysisAffinityCandidate = { inner?: -2 | -1 | 0 | 1 | 2 | null; outer?: -2 | -1 | 0 | 1 | 2 | null; note?: string };
+
+export type StateAnalysisProfileCandidate = {
+  characterId?: string;
+  canonicalName?: string;
+  aliases?: string[];
+  basic?: StateAnalysisBasicCandidate;
+  appearance?: StateAnalysisAppearanceCandidate;
+  identity?: StateAnalysisIdentityCandidate;
+  personality?: StateAnalysisPersonalityCandidate;
+  lifeDetails?: string[];
+  nsfw?: Record<string, unknown>;
+  lockedPaths?: string[];
+  sourcePriority?: Record<string, 'manual' | 'story' | 'card'>;
+  updatedAt?: string;
+};
+
+export type StateAnalysisTraceCandidate = {
+  characterId?: string;
+  longTermTendencies?: CharacterTrace['longTermTendencies'];
+  currentSituations?: CharacterTrace['currentSituations'];
+  visibility?: CharacterTrace['visibility'];
+  affinity?: StateAnalysisAffinityCandidate;
+  updatedAt?: string;
+};
+
+export type StateAnalysisStoryCandidate = {
+  now?: {
+    currentTime?: string;
+    ongoing?: StoryState['now']['ongoing'];
+    upcoming?: StoryState['now']['upcoming'];
+  };
+  calendar?: CalendarEntry[];
+  plotlines?: Plotline[];
+  plotPlans?: PlotPlan[];
+};
+
+export type StateAnalysisCandidate = {
+  profiles?: Record<string, StateAnalysisProfileCandidate>;
+  traces?: Record<string, StateAnalysisTraceCandidate>;
+  story?: StateAnalysisStoryCandidate;
   touchedCharacterIds?: string[];
   notes?: string[];
 };
+
+export type StateAnalysisResponse = StateAnalysisCandidate;
 
 export type StateSourceContext = {
   branchId: string;
@@ -486,8 +529,8 @@ function validatePartialStory(value: unknown, path: string): void {
     const now = objectValue(item.now, `${path}.now`);
     knownKeys(now, ['currentTime', 'ongoing', 'upcoming'], `${path}.now`);
     optionalString(now.currentTime, `${path}.now.currentTime`);
-    if (now.ongoing !== undefined) validateStory({ now: { ongoing: now.ongoing, upcoming: [] }, calendar: [], plotlines: [], plotPlans: [], source: { branchId: '_', sourceFloorIds: [], sourceHostChatIds: [] } }, `${path}.now`);
-    if (now.upcoming !== undefined) validateStory({ now: { ongoing: [], upcoming: now.upcoming }, calendar: [], plotlines: [], plotPlans: [], source: { branchId: '_', sourceFloorIds: [], sourceHostChatIds: [] } }, `${path}.now`);
+    if (now.ongoing !== undefined) validateStory({ now: { ongoing: now.ongoing, upcoming: [] }, calendar: [], plotlines: [], plotPlans: [], source: { branchId: '_', sourceFloorIds: [], sourceHostChatIds: [] } }, path);
+    if (now.upcoming !== undefined) validateStory({ now: { ongoing: [], upcoming: now.upcoming }, calendar: [], plotlines: [], plotPlans: [], source: { branchId: '_', sourceFloorIds: [], sourceHostChatIds: [] } }, path);
   }
   if (item.calendar !== undefined || item.plotlines !== undefined || item.plotPlans !== undefined) {
     validateStory({ now: { ongoing: [], upcoming: [] }, calendar: item.calendar ?? [], plotlines: item.plotlines ?? [], plotPlans: item.plotPlans ?? [], source: { branchId: '_', sourceFloorIds: [], sourceHostChatIds: [] } }, path);
@@ -669,7 +712,8 @@ const storySchema = {
   properties: { now: { type: 'object', additionalProperties: false, required: ['ongoing', 'upcoming'], properties: { currentTime: stringSchema, ongoing: { type: 'array', items: ongoingSchema }, upcoming: { type: 'array', items: upcomingSchema } } }, calendar: { type: 'array', items: calendarSchema }, plotlines: { type: 'array', items: plotlineSchema }, plotPlans: { type: 'array', items: plotPlanSchema }, source: { $ref: '#/$defs/source' } }
 };
 const partialProfileSchema = { type: 'object', additionalProperties: false, properties: { characterId: stringSchema, canonicalName: stringSchema, aliases: stringArraySchema, basic: profileBasicSchema, appearance: profileAppearanceSchema, identity: profileIdentitySchema, personality: profilePersonalitySchema, lifeDetails: stringArraySchema, nsfw: { type: 'object' }, lockedPaths: stringArraySchema, sourcePriority: sourcePrioritySchema, updatedAt: stringSchema } };
-const partialTraceSchema = { type: 'object', additionalProperties: false, properties: { characterId: stringSchema, longTermTendencies: { type: 'array', items: tendencySchema }, currentSituations: { type: 'array', items: situationSchema }, visibility: { type: 'array', items: visibilitySchema }, affinity: affinitySchema, updatedAt: stringSchema } };
+const partialAffinitySchema = { type: 'object', additionalProperties: false, properties: { inner: { type: ['integer', 'null'], minimum: -2, maximum: 2 }, outer: { type: ['integer', 'null'], minimum: -2, maximum: 2 }, note: stringSchema } };
+const partialTraceSchema = { type: 'object', additionalProperties: false, properties: { characterId: stringSchema, longTermTendencies: { type: 'array', items: tendencySchema }, currentSituations: { type: 'array', items: situationSchema }, visibility: { type: 'array', items: visibilitySchema }, affinity: partialAffinitySchema, updatedAt: stringSchema } };
 const partialStorySchema = { type: 'object', additionalProperties: false, properties: { now: { type: 'object', additionalProperties: false, properties: { currentTime: stringSchema, ongoing: { type: 'array', items: ongoingSchema }, upcoming: { type: 'array', items: upcomingSchema } } }, calendar: { type: 'array', items: calendarSchema }, plotlines: { type: 'array', items: plotlineSchema }, plotPlans: { type: 'array', items: plotPlanSchema } } };
 
 export const STATE_SNAPSHOT_JSON_SCHEMA = {
@@ -681,6 +725,6 @@ export const STATE_SNAPSHOT_JSON_SCHEMA = {
 
 export const STATE_ANALYSIS_RESPONSE_JSON_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema', $id: 'https://weavememory.local/schema/state-analysis-response.v1.json', title: 'WeaveMemory StateAnalysisResponse', type: 'object', additionalProperties: false,
-  properties: { profiles: { type: 'object', additionalProperties: partialProfileSchema }, traces: { type: 'object', additionalProperties: partialTraceSchema }, story: partialStorySchema, touchedCharacterIds: stringArraySchema, notes: { type: 'array', items: { type: 'string' } } },
+  properties: { profiles: { type: 'object', additionalProperties: partialProfileSchema }, traces: { type: 'object', additionalProperties: partialTraceSchema }, story: partialStorySchema, touchedCharacterIds: stringArraySchema, notes: stringArraySchema },
   $defs: { profile: partialProfileSchema, trace: partialTraceSchema, story: partialStorySchema, calendarEntry: calendarSchema, plotline: plotlineSchema, plotPlan: plotPlanSchema, source: sourceSchema }
 } as const;
