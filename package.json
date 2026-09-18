@@ -13,7 +13,8 @@
     "test:floor-reconcile": "tsc -p tsconfig.test.json && node .test-dist/tests/floor-reconcile-acceptance.js",
     "test:branch": "tsc -p tsconfig.test.json && node .test-dist/tests/branch-acceptance.js",
     "test:branch-fork": "tsc -p tsconfig.test.json && node .test-dist/tests/branch-fork-acceptance.js",
-    "test:host-branch": "tsc -p tsconfig.test.json && node .test-dist/tests/host-branch-binding-acceptance.js"
+    "test:host-branch": "tsc -p tsconfig.test.json && node .test-dist/tests/host-branch-binding-acceptance.js",
+    "test:state-schema": "tsc -p tsconfig.test.json && node .test-dist/tests/state-schema-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",
