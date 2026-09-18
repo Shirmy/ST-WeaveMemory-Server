@@ -1,13 +1,26 @@
+import { emptySnapshot } from '../state/apply';
 import type { KnownCharacter, StateSnapshot } from '../state/schema';
+import type { StateNodeRecord } from '../storage/state-chain-store';
 
 export type RelevantState = Pick<StateSnapshot, 'profiles' | 'traces' | 'story'>;
 
+export type StateContextBlock = {
+  code: 'WM_STATE_PENDING';
+  message: string;
+  /** True when the blocking floor has a pending or running analysis job of its own. */
+  pendingJob: boolean;
+};
+
 export type StateAnalysisContext = {
   previousRelevantState: RelevantState;
-  /** Fingerprint of the previous effective state; null until Phase 5 provides state nodes. */
+  /** Fingerprint of the previous effective state; null at the chain start or while blocked. */
   previousStateFingerprint: string | null;
   lockedPaths: string[];
   knownCharacters: KnownCharacter[];
+  /** The state node the floor is analysed against (Phase 5 chain); null at the chain start. */
+  previousNode?: StateNodeRecord | null;
+  /** Set when the chain before the floor is not usable yet (roadmap §7: no gaps in the chain). */
+  blocked?: StateContextBlock;
 };
 
 export type StateContextTarget = {
@@ -22,22 +35,13 @@ export interface StateContextProvider {
 }
 
 export function emptyRelevantState(branchId: string): RelevantState {
-  return {
-    profiles: {},
-    traces: {},
-    story: {
-      now: { ongoing: [], upcoming: [] },
-      calendar: [],
-      plotlines: [],
-      plotPlans: [],
-      source: { branchId, sourceFloorIds: [], sourceHostChatIds: [] }
-    }
-  };
+  const { profiles, traces, story } = emptySnapshot(branchId);
+  return { profiles, traces, story };
 }
 
 /**
- * Phase 4 placeholder: no persisted snapshot exists yet, so every floor is analysed against an
- * empty previous state. Phase 5 replaces this with checkpoint + delta replay.
+ * Chain-less provider: every floor is analysed against an empty previous state. Kept for tests of
+ * the task runner itself; production wiring uses SnapshotContextProvider.
  */
 export class EmptyStateContextProvider implements StateContextProvider {
   async load(target: StateContextTarget): Promise<StateAnalysisContext> {
@@ -45,7 +49,8 @@ export class EmptyStateContextProvider implements StateContextProvider {
       previousRelevantState: emptyRelevantState(target.branchId),
       previousStateFingerprint: null,
       lockedPaths: [],
-      knownCharacters: []
+      knownCharacters: [],
+      previousNode: null
     };
   }
 }

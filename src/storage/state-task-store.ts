@@ -20,6 +20,8 @@ export type StateTaskPayload = {
   protocolVersion: number;
   schemaVersion: number;
   reason: string;
+  /** Set when the job reapplies an earlier candidate instead of calling the model (§21 reuse). */
+  reuseFromJobId?: string | null;
 };
 
 export type StateTaskDiagnostics = {
@@ -32,6 +34,11 @@ export type StateTaskDiagnostics = {
   promptVersion: string;
   usage: { promptTokens: number | null; completionTokens: number | null } | null;
   rawTextSnippet: string;
+  /** Phase 5: the state node produced from this candidate (null when no chain engine is attached). */
+  stateNodeId: string | null;
+  stateFingerprint: string | null;
+  checkpointId: string | null;
+  reusedFromJobId: string | null;
 };
 
 export type StateTaskResult = {

@@ -1,0 +1,300 @@
+import type { StateChainStore, StateNodeRecord, StateDeltaRecord, ActiveFloorRef } from '../storage/state-chain-store';
+import { newCheckpointId, newDeltaId, newStateNodeId } from '../storage/state-chain-store';
+import type { SqliteDatabase } from '../storage/sqlite-database';
+import type { MemoryStore } from '../storage/types';
+import { applyCandidate, emptySnapshot, snapshotFingerprint } from './apply';
+import { applyChangesInPlace, deepClone, diffValues, partitionChanges } from './diff';
+import type { StateAnalysisCandidate, StateSnapshot } from './schema';
+
+export class StateChainError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = 'StateChainError';
+  }
+}
+
+export type ChainPosition = {
+  messageIndex: number;
+  floorId: string;
+  /** The node that represents this floor in the trusted prefix, or the latest known node when invalid. */
+  node: StateNodeRecord | null;
+  valid: boolean;
+};
+
+/**
+ * Roadmap §21 "trusted prefix": walking the active floors in order, a floor is valid when it has a
+ * synced node whose previousStateFingerprint equals the fingerprint of the previous valid node
+ * (null at the chain start). The first floor that fails breaks the chain for everything after it.
+ */
+export type TrustedPrefix = {
+  chatId: string;
+  branchId: string;
+  positions: ChainPosition[];
+  firstInvalidIndex: number | null;
+  head: StateNodeRecord | null;
+};
+
+export type PreviousResolution =
+  | { kind: 'start' }
+  | { kind: 'ready'; node: StateNodeRecord; floor: ActiveFloorRef }
+  | { kind: 'blocked'; floor: ActiveFloorRef; reason: string };
+
+export type ReplayResult = {
+  snapshot: StateSnapshot;
+  checkpointNodeId: string | null;
+  appliedDeltas: number;
+  fromHeadCache: boolean;
+};
+
+export type CommitCandidateInput = {
+  chatId: string;
+  branchId: string;
+  hostChatId: string;
+  floorId: string;
+  messageIndex: number;
+  swipeId: number | null;
+  bodyFingerprint: string;
+  dependencyFingerprint: string;
+  candidate: StateAnalysisCandidate;
+  previous: StateNodeRecord | null;
+  now?: string;
+};
+
+export type CommitCandidateResult = {
+  node: StateNodeRecord;
+  delta: StateDeltaRecord;
+  snapshot: StateSnapshot;
+  checkpointId: string | null;
+  changed: boolean;
+};
+
+export type CurrentStateView = {
+  prefix: TrustedPrefix;
+  node: StateNodeRecord | null;
+  snapshot: StateSnapshot;
+};
+
+export type FloorStateView = {
+  floorId: string;
+  node: StateNodeRecord;
+  snapshot: StateSnapshot;
+  valid: boolean;
+};
+
+export type StateChainEngineDeps = {
+  database: SqliteDatabase;
+  chain: StateChainStore;
+  store: MemoryStore;
+  checkpointInterval: () => Promise<number>;
+};
+
+function fingerprintOf(node: StateNodeRecord | null): string | null {
+  return node?.stateFingerprint ?? null;
+}
+
+/**
+ * Builds and reads the state chain (roadmap §12–§15, §21): one synced node per analysed floor,
+ * program-computed deltas, periodic checkpoints, replay = nearest checkpoint + later deltas.
+ */
+export class StateChainEngine {
+  constructor(private readonly deps: StateChainEngineDeps) {}
+
+  async trustedPrefix(chatId: string, branchId: string): Promise<TrustedPrefix> {
+    const floors = await this.deps.chain.listActiveFloors(chatId, branchId);
+    const nodes = await this.deps.chain.listNodes(branchId);
+    const byFloor = new Map<string, StateNodeRecord[]>();
+    for (const node of nodes) {
+      if (node.status !== 'synced') continue;
+      const list = byFloor.get(node.floorId) ?? [];
+      list.push(node);
+      byFloor.set(node.floorId, list);
+    }
+    for (const list of byFloor.values()) list.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const positions: ChainPosition[] = [];
+    let previous: StateNodeRecord | null = null;
+    let firstInvalidIndex: number | null = null;
+    for (const floor of floors) {
+      const candidates = byFloor.get(floor.floorId) ?? [];
+      const expected = fingerprintOf(previous);
+      const match = firstInvalidIndex === null ? candidates.find(node => (node.previousStateFingerprint ?? null) === expected) ?? null : null;
+      if (match) {
+        positions.push({ messageIndex: floor.messageIndex, floorId: floor.floorId, node: match, valid: true });
+        previous = match;
+        continue;
+      }
+      if (firstInvalidIndex === null) firstInvalidIndex = floor.messageIndex;
+      positions.push({ messageIndex: floor.messageIndex, floorId: floor.floorId, node: candidates[0] ?? null, valid: false });
+    }
+    return { chatId, branchId, positions, firstInvalidIndex, head: previous };
+  }
+
+  /** Which state a floor at `messageIndex` must be analysed against. */
+  async resolvePrevious(chatId: string, branchId: string, messageIndex: number): Promise<PreviousResolution> {
+    const prefix = await this.trustedPrefix(chatId, branchId);
+    const before = prefix.positions.filter(position => position.messageIndex < messageIndex);
+    const last = before.at(-1);
+    if (!last) return { kind: 'start' };
+    const floor = { messageIndex: last.messageIndex, floorId: last.floorId };
+    if (last.valid && last.node) return { kind: 'ready', node: last.node, floor };
+    const reason = last.node ? 'its state node no longer matches the chain before it' : 'it has no synced state node';
+    return { kind: 'blocked', floor, reason };
+  }
+
+  /** The node representing `floorId` inside the trusted prefix, if any. */
+  async validNodeForFloor(chatId: string, branchId: string, floorId: string): Promise<StateNodeRecord | null> {
+    const prefix = await this.trustedPrefix(chatId, branchId);
+    const position = prefix.positions.find(item => item.floorId === floorId);
+    return position?.valid ? position.node : null;
+  }
+
+  async snapshotAt(node: StateNodeRecord): Promise<ReplayResult> {
+    const { chain } = this.deps;
+    const head = await chain.getBranchHead(node.branchId);
+    if (head && head.stateNodeId === node.stateNodeId && head.snapshotFingerprint === node.stateFingerprint) {
+      return { snapshot: head.snapshot, checkpointNodeId: null, appliedDeltas: 0, fromHeadCache: true };
+    }
+    const byId = new Map((await chain.listNodes(node.branchId)).map(item => [item.stateNodeId, item]));
+    const trail: StateNodeRecord[] = [];
+    let base: StateSnapshot | null = null;
+    let checkpointNodeId: string | null = null;
+    let cursor: StateNodeRecord | null = node;
+    while (cursor) {
+      if (cursor.checkpointId) {
+        const checkpoint = await chain.getCheckpoint(cursor.checkpointId);
+        if (!checkpoint) throw new StateChainError('WM_STATE_SYNC_FAILED', `checkpoint ${cursor.checkpointId} is missing`);
+        base = checkpoint.snapshot;
+        checkpointNodeId = cursor.stateNodeId;
+        break;
+      }
+      trail.push(cursor);
+      if (!cursor.previousStateNodeId) break;
+      const previous = byId.get(cursor.previousStateNodeId);
+      if (!previous) throw new StateChainError('WM_STATE_SYNC_FAILED', `state node ${cursor.previousStateNodeId} is missing from the chain`);
+      cursor = previous;
+    }
+    trail.reverse();
+    const deltas = await chain.getDeltasByNodeIds(trail.map(item => item.stateNodeId));
+    let snapshot = deepClone(base ?? emptySnapshot(node.branchId));
+    for (const item of trail) {
+      const delta = deltas.get(item.stateNodeId);
+      if (!delta) throw new StateChainError('WM_STATE_SYNC_FAILED', `state delta for node ${item.stateNodeId} is missing`);
+      snapshot = applyChangesInPlace(snapshot, [...delta.profileChanges, ...delta.traceChanges, ...delta.storyChanges, ...delta.rootChanges]);
+    }
+    const fingerprint = snapshotFingerprint(snapshot);
+    if (fingerprint !== node.stateFingerprint) {
+      throw new StateChainError('WM_STATE_SYNC_FAILED', `replayed state of node ${node.stateNodeId} does not match its fingerprint`);
+    }
+    return { snapshot, checkpointNodeId, appliedDeltas: trail.length, fromHeadCache: false };
+  }
+
+  async snapshotForPrevious(resolution: PreviousResolution, branchId: string): Promise<StateSnapshot> {
+    if (resolution.kind === 'ready') return (await this.snapshotAt(resolution.node)).snapshot;
+    return emptySnapshot(branchId);
+  }
+
+  /** Applies a validated candidate on top of `previous`, persists node + delta (+ checkpoint) atomically. */
+  async commitCandidate(input: CommitCandidateInput): Promise<CommitCandidateResult> {
+    const { chain, database, store } = this.deps;
+    const now = input.now ?? new Date().toISOString();
+    const previousSnapshot = input.previous ? (await this.snapshotAt(input.previous)).snapshot : emptySnapshot(input.branchId);
+    const applied = applyCandidate(previousSnapshot, input.candidate, {
+      branchId: input.branchId,
+      floorId: input.floorId,
+      hostChatId: input.hostChatId,
+      now
+    });
+    const changes = diffValues(previousSnapshot, applied.snapshot);
+    const parts = partitionChanges(changes);
+    const stateFingerprint = snapshotFingerprint(applied.snapshot);
+    const stateNodeId = newStateNodeId();
+    const deltaId = newDeltaId();
+    const interval = Math.max(1, Math.floor(await this.deps.checkpointInterval()));
+    const sinceCheckpoint = await this.nodesSinceCheckpoint(input.previous);
+    const checkpointId = sinceCheckpoint + 1 >= interval ? newCheckpointId() : null;
+    const node: StateNodeRecord = {
+      stateNodeId,
+      chatId: input.chatId,
+      branchId: input.branchId,
+      floorId: input.floorId,
+      messageIndex: input.messageIndex,
+      swipeId: input.swipeId,
+      bodyFingerprint: input.bodyFingerprint,
+      previousStateNodeId: input.previous?.stateNodeId ?? null,
+      previousStateFingerprint: fingerprintOf(input.previous),
+      dependencyFingerprint: input.dependencyFingerprint,
+      deltaId,
+      checkpointId,
+      status: 'synced',
+      stateFingerprint,
+      createdAt: now,
+      updatedAt: now
+    };
+    const delta: StateDeltaRecord = {
+      deltaId,
+      stateNodeId,
+      floorId: input.floorId,
+      previousStateNodeId: node.previousStateNodeId,
+      ...parts,
+      createdAt: now
+    };
+    await database.transaction(async () => {
+      await chain.insertDelta(delta);
+      await chain.insertNode(node);
+      if (checkpointId) {
+        await chain.insertCheckpoint({
+          checkpointId,
+          chatId: input.chatId,
+          branchId: input.branchId,
+          stateNodeId,
+          snapshot: applied.snapshot,
+          snapshotFingerprint: stateFingerprint,
+          createdAt: now
+        });
+      }
+      await chain.upsertBranchHead({
+        branchId: input.branchId,
+        chatId: input.chatId,
+        stateNodeId,
+        snapshot: applied.snapshot,
+        snapshotFingerprint: stateFingerprint,
+        updatedAt: now
+      });
+      await store.updateFloorStatus(input.floorId, 'synced');
+    });
+    return { node, delta, snapshot: applied.snapshot, checkpointId, changed: applied.changed };
+  }
+
+  async current(chatId: string, branchId: string): Promise<CurrentStateView> {
+    const prefix = await this.trustedPrefix(chatId, branchId);
+    if (!prefix.head) return { prefix, node: null, snapshot: emptySnapshot(branchId) };
+    const replay = await this.snapshotAt(prefix.head);
+    return { prefix, node: prefix.head, snapshot: replay.snapshot };
+  }
+
+  /** State after a specific floor variant, whether or not it is part of the current chain. */
+  async snapshotAtFloor(chatId: string, branchId: string, messageIndex: number, swipeId: number | null): Promise<FloorStateView | null> {
+    const floorIds = await this.deps.chain.findFloorIds(chatId, branchId, messageIndex, swipeId);
+    if (!floorIds.length) return null;
+    const prefix = await this.trustedPrefix(chatId, branchId);
+    for (const floorId of floorIds) {
+      const position = prefix.positions.find(item => item.floorId === floorId);
+      const node = position?.valid && position.node ? position.node : (await this.deps.chain.listNodesForFloor(floorId)).find(item => item.status === 'synced') ?? null;
+      if (!node) continue;
+      const replay = await this.snapshotAt(node);
+      return { floorId, node, snapshot: replay.snapshot, valid: Boolean(position?.valid) };
+    }
+    return null;
+  }
+
+  private async nodesSinceCheckpoint(previous: StateNodeRecord | null): Promise<number> {
+    if (!previous) return 0;
+    const byId = new Map((await this.deps.chain.listNodes(previous.branchId)).map(item => [item.stateNodeId, item]));
+    let count = 0;
+    let cursor: StateNodeRecord | null = previous;
+    while (cursor && !cursor.checkpointId) {
+      count += 1;
+      cursor = cursor.previousStateNodeId ? byId.get(cursor.previousStateNodeId) ?? null : null;
+    }
+    return count;
+  }
+}

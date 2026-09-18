@@ -267,6 +267,28 @@ CREATE INDEX IF NOT EXISTS idx_jobs_chat_kind_status
 CREATE INDEX IF NOT EXISTS idx_jobs_floor
   ON jobs(floor_id);
 `
+}, {
+  version: 5,
+  name: 'state-chain-heads-and-indexes',
+  sql: `
+CREATE TABLE IF NOT EXISTS branch_state_heads (
+  branch_id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL,
+  state_node_id TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  snapshot_fingerprint TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_state_nodes_branch_index
+  ON state_nodes(branch_id, message_index);
+CREATE INDEX IF NOT EXISTS idx_state_nodes_floor
+  ON state_nodes(floor_id);
+CREATE INDEX IF NOT EXISTS idx_state_deltas_node
+  ON state_deltas(state_node_id);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_branch
+  ON checkpoints(branch_id, created_at);
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

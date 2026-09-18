@@ -136,7 +136,7 @@ async function main(): Promise<void> {
     reply('<think>let me see</think>\n```json\n{"profiles":{"alice":{"canonicalName":"Alice","aliases":["Ally"]}},"traces":{"alice":{"affinity":{"inner":1}}},"story":{"now":{"currentTime":"Spring, day 1"}},"touchedCharacterIds":["alice"]}\n```');
     const first = await finalize(1, floor1Content);
     assert.equal(first.stateTask?.outcome, 'queued');
-    const job1 = await finished(first.stateTask!.jobId);
+    const job1 = await finished(first.stateTask!.jobId!);
     assert.equal(job1.status, 'succeeded', job1.errorMessage ?? '');
     assert.equal(job1.attempts, 1);
     assert.equal(job1.result?.candidate.profiles?.alice.canonicalName, 'Alice');
@@ -163,7 +163,7 @@ async function main(): Promise<void> {
     reply('Sure! Nothing changed in this scene.');
     reply('{}');
     const second = await finalize(2, 'Nothing much happens here.');
-    const job2 = await finished(second.stateTask!.jobId);
+    const job2 = await finished(second.stateTask!.jobId!);
     assert.equal(job2.status, 'succeeded', job2.errorMessage ?? '');
     assert.equal(job2.attempts, 2);
     assert.deepEqual(job2.result?.candidate, {});
@@ -176,7 +176,7 @@ async function main(): Promise<void> {
     reply('{"traces":{"bob":{"affinity":{"inner":3}}}}');
     reply('{"traces":{"bob":{"affinity":{"inner":2}}}}');
     const third = await finalize(3, 'Bob confessed.');
-    const job3 = await finished(third.stateTask!.jobId);
+    const job3 = await finished(third.stateTask!.jobId!);
     assert.equal(job3.status, 'succeeded', job3.errorMessage ?? '');
     assert.equal(job3.attempts, 2);
     assert.equal(job3.result?.candidate.traces?.bob.affinity?.inner, 2);
@@ -185,14 +185,14 @@ async function main(): Promise<void> {
     scripted.push((_body, res) => json(res, 429, { error: { message: 'slow down' } }));
     reply('{}');
     const fourth = await finalize(4, 'Quiet evening.');
-    const job4 = await finished(fourth.stateTask!.jobId);
+    const job4 = await finished(fourth.stateTask!.jobId!);
     assert.equal(job4.status, 'succeeded', job4.errorMessage ?? '');
     assert.equal(job4.attempts, 2);
 
     // 5. non-retryable provider error -> failed immediately
     scripted.push((_body, res) => json(res, 400, { error: { message: 'bad request' } }));
     const fifth = await finalize(5, 'Broken request.');
-    const job5 = await finished(fifth.stateTask!.jobId);
+    const job5 = await finished(fifth.stateTask!.jobId!);
     assert.equal(job5.status, 'failed');
     assert.equal(job5.attempts, 1);
     assert.equal(job5.errorCode, 'WM_AI_REQUEST_FAILED');
@@ -206,7 +206,7 @@ async function main(): Promise<void> {
       });
     }
     const sixth = await finalize(6, 'Slow model.');
-    const job6 = await finished(sixth.stateTask!.jobId);
+    const job6 = await finished(sixth.stateTask!.jobId!);
     assert.equal(job6.status, 'failed');
     assert.equal(job6.errorCode, 'WM_AI_TIMEOUT');
     assert.equal(job6.attempts, 2);
@@ -217,12 +217,12 @@ async function main(): Promise<void> {
       setTimeout(() => json(res, 200, completion('{"story":{"now":{"currentTime":"stale"}}}')), 400);
     });
     const seventh = await finalize(7, 'Version one of floor seven.');
-    await waitFor(tasks, seventh.stateTask!.jobId, job => job.status === 'running');
+    await waitFor(tasks, seventh.stateTask!.jobId!, job => job.status === 'running');
     const requestCountBeforeEdit = requests.length;
     activeFloors.splice(activeFloors.findIndex(floor => floor.messageIndex === 7), 1, { messageIndex: 7, swipeId: 0, content: 'Version two of floor seven.' });
     const reconciled = await runtime.reconcileChat({ chatId: CHAT_ID, floors: activeFloors });
     assert.ok(reconciled.staleFloorIds.includes(seventh.floorKey));
-    const job7 = await finished(seventh.stateTask!.jobId);
+    const job7 = await finished(seventh.stateTask!.jobId!);
     assert.equal(job7.status, 'cancelled');
     assert.equal(job7.result, null);
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -230,7 +230,7 @@ async function main(): Promise<void> {
     reply('{"story":{"now":{"currentTime":"v2"}}}');
     const seventhV2 = await finalize(7, 'Version two of floor seven.');
     assert.equal(seventhV2.stateTask?.outcome, 'queued');
-    const job7v2 = await finished(seventhV2.stateTask!.jobId);
+    const job7v2 = await finished(seventhV2.stateTask!.jobId!);
     assert.equal(job7v2.status, 'succeeded', job7v2.errorMessage ?? '');
     assert.equal(job7v2.result?.candidate.story?.now?.currentTime, 'v2');
 
@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     await aiConfig.clearBinding('state');
     const requestCountBeforeUnbound = requests.length;
     const eighth = await finalize(8, 'Unbound.');
-    const job8 = await finished(eighth.stateTask!.jobId);
+    const job8 = await finished(eighth.stateTask!.jobId!);
     assert.equal(job8.status, 'failed');
     assert.equal(job8.errorCode, 'WM_AI_CHANNEL_UNAVAILABLE');
     assert.equal(requests.length, requestCountBeforeUnbound);
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
     reply('{}');
     const promptChanged = await finalize(1, floor1Content);
     assert.equal(promptChanged.stateTask?.outcome, 'queued');
-    const job10 = await finished(promptChanged.stateTask!.jobId);
+    const job10 = await finished(promptChanged.stateTask!.jobId!);
     assert.equal(job10.status, 'succeeded', job10.errorMessage ?? '');
     assert.notEqual(job10.payload.statePromptVersion, job1.payload.statePromptVersion);
     assert.notEqual(job10.payload.dependencyFingerprint, job1.payload.dependencyFingerprint);
@@ -269,7 +269,7 @@ async function main(): Promise<void> {
     reply('{}');
     const manual = await runner.requeueFloor(CHAT_ID, first.floorKey);
     assert.equal(manual.outcome, 'queued');
-    const job11 = await finished(manual.jobId);
+    const job11 = await finished(manual.jobId!);
     assert.equal(job11.status, 'succeeded', job11.errorMessage ?? '');
     assert.equal(job11.payload.reason, 'manual');
 
@@ -320,10 +320,10 @@ async function main(): Promise<void> {
     const dependentContent = 'Floor twenty depends on the state left by floor nineteen.';
     const dependent = await finalize(20, dependentContent);
     assert.equal(dependent.stateTask?.outcome, 'queued');
-    const runningDependent = await waitFor(tasks, dependent.stateTask!.jobId, job => job.status === 'running');
+    const runningDependent = await waitFor(tasks, dependent.stateTask!.jobId!, job => job.status === 'running');
     assert.equal(runningDependent.payload.previousStateFingerprint, 'sha256:previous-state-A');
     contextProvider.previousStateFingerprint = 'sha256:previous-state-B';
-    const job15 = await finished(dependent.stateTask!.jobId);
+    const job15 = await finished(dependent.stateTask!.jobId!);
     assert.equal(job15.status, 'stale');
     assert.equal(job15.errorCode, 'WM_TASK_STALE');
     assert.match(job15.errorMessage ?? '', /previous effective state changed/);
@@ -335,7 +335,7 @@ async function main(): Promise<void> {
     const dependentAgain = await finalize(20, dependentContent);
     assert.equal(dependentAgain.stateTask?.outcome, 'queued');
     assert.notEqual(dependentAgain.stateTask?.jobId, dependent.stateTask?.jobId);
-    const job16 = await finished(dependentAgain.stateTask!.jobId);
+    const job16 = await finished(dependentAgain.stateTask!.jobId!);
     assert.equal(job16.status, 'succeeded', job16.errorMessage ?? '');
     assert.equal(job16.result?.candidate.story?.now?.currentTime, 'computed against state B');
     assert.equal(job16.payload.previousStateFingerprint, 'sha256:previous-state-B');
@@ -351,7 +351,7 @@ async function main(): Promise<void> {
     // 17. control case: previous state unchanged during analysis -> normal success
     reply('{}');
     const stableDependent = await finalize(21, 'Floor twenty-one continues quietly.');
-    const job17 = await finished(stableDependent.stateTask!.jobId);
+    const job17 = await finished(stableDependent.stateTask!.jobId!);
     assert.equal(job17.status, 'succeeded', job17.errorMessage ?? '');
     assert.equal(job17.payload.previousStateFingerprint, 'sha256:previous-state-B');
     assert.equal((await store.getFloor(stableDependent.floorKey))?.status, 'synced');

@@ -17,7 +17,9 @@
     "test:state-schema": "tsc -p tsconfig.test.json && node .test-dist/tests/state-schema-acceptance.js",
     "test:ai-config": "tsc -p tsconfig.test.json && node .test-dist/tests/ai-config-acceptance.js",
     "test:ai-client": "tsc -p tsconfig.test.json && node .test-dist/tests/ai-client-acceptance.js",
-    "test:state-task": "tsc -p tsconfig.test.json && node .test-dist/tests/state-task-acceptance.js"
+    "test:state-task": "tsc -p tsconfig.test.json && node .test-dist/tests/state-task-acceptance.js",
+    "test:state-diff": "tsc -p tsconfig.test.json && node .test-dist/tests/state-diff-acceptance.js",
+    "test:state-chain": "tsc -p tsconfig.test.json && node .test-dist/tests/state-chain-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",

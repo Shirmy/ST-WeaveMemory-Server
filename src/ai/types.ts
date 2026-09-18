@@ -71,11 +71,14 @@ export type ActivePrompt = {
 export type StateTaskSettings = {
   timeoutSec: number;
   maxAttempts: number;
+  /** Roadmap §14.2: a full snapshot checkpoint every N synced state nodes. */
+  checkpointInterval: number;
 };
 
-export const DEFAULT_STATE_TASK_SETTINGS: StateTaskSettings = { timeoutSec: 45, maxAttempts: 3 };
+export const DEFAULT_STATE_TASK_SETTINGS: StateTaskSettings = { timeoutSec: 45, maxAttempts: 3, checkpointInterval: 20 };
 
 export const STATE_TASK_SETTING_LIMITS = {
   timeoutSec: { min: 15, max: 120 },
-  maxAttempts: { min: 1, max: 5 }
+  maxAttempts: { min: 1, max: 5 },
+  checkpointInterval: { min: 1, max: 200 }
 } as const;

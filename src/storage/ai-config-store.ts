@@ -420,7 +420,8 @@ export class AiConfigStore {
       const parsed = JSON.parse(raw) as Partial<StateTaskSettings>;
       return {
         timeoutSec: typeof parsed.timeoutSec === 'number' ? parsed.timeoutSec : DEFAULT_STATE_TASK_SETTINGS.timeoutSec,
-        maxAttempts: typeof parsed.maxAttempts === 'number' ? parsed.maxAttempts : DEFAULT_STATE_TASK_SETTINGS.maxAttempts
+        maxAttempts: typeof parsed.maxAttempts === 'number' ? parsed.maxAttempts : DEFAULT_STATE_TASK_SETTINGS.maxAttempts,
+        checkpointInterval: typeof parsed.checkpointInterval === 'number' ? parsed.checkpointInterval : DEFAULT_STATE_TASK_SETTINGS.checkpointInterval
       };
     } catch {
       return { ...DEFAULT_STATE_TASK_SETTINGS };
@@ -432,7 +433,8 @@ export class AiConfigStore {
     const current = await this.getStateTaskSettings();
     const next: StateTaskSettings = {
       timeoutSec: patch.timeoutSec ?? current.timeoutSec,
-      maxAttempts: patch.maxAttempts ?? current.maxAttempts
+      maxAttempts: patch.maxAttempts ?? current.maxAttempts,
+      checkpointInterval: patch.checkpointInterval ?? current.checkpointInterval
     };
     for (const [field, value] of Object.entries(next)) {
       if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) throw new AiConfigError(`${field} must be a positive number`);

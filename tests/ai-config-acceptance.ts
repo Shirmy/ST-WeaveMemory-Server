@@ -113,18 +113,18 @@ async function main(): Promise<void> {
     assert.equal((await store.getActivePrompt('state')).preset.presetId, BUILTIN_PRESET_IDS.state);
 
     // state task settings persist across reopen
-    assert.deepEqual(await store.getStateTaskSettings(), { timeoutSec: 45, maxAttempts: 3 });
-    assert.deepEqual(await store.saveStateTaskSettings({ timeoutSec: 60 }), { timeoutSec: 60, maxAttempts: 3 });
+    assert.deepEqual(await store.getStateTaskSettings(), { timeoutSec: 45, maxAttempts: 3, checkpointInterval: 20 });
+    assert.deepEqual(await store.saveStateTaskSettings({ timeoutSec: 60 }), { timeoutSec: 60, maxAttempts: 3, checkpointInterval: 20 });
     await expectConfigError(() => store.saveStateTaskSettings({ maxAttempts: 0 }));
     await database.close();
     database = await SqliteDatabase.open(paths.databasePath);
     await runMigrations(database, paths);
     store = new AiConfigStore(database, secrets);
-    assert.deepEqual(await store.getStateTaskSettings(), { timeoutSec: 60, maxAttempts: 3 });
+    assert.deepEqual(await store.getStateTaskSettings(), { timeoutSec: 60, maxAttempts: 3, checkpointInterval: 20 });
 
-    // schema reached v4 and the jobs table gained the state task columns
+    // schema reached v5 and the jobs table gained the state task columns
     const version = await database.get<{ user_version: number }>('PRAGMA user_version');
-    assert.equal(version?.user_version, 4);
+    assert.equal(version?.user_version, 5);
     const jobColumns = await database.all<{ name: string }>('PRAGMA table_info(jobs)');
     for (const column of ['branch_id', 'floor_id', 'message_index', 'attempts', 'result_json', 'error_code', 'error_message', 'started_at', 'finished_at']) {
       assert.ok(jobColumns.some(item => item.name === column), `jobs.${column} missing`);

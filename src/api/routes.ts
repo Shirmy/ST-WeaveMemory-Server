@@ -18,7 +18,7 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
         apiVersion: API_VERSION,
         schemaVersion: SCHEMA_VERSION,
         database: databaseHealth,
-        capabilities: ['generation-gate', 'floor-binding', 'persistent-storage', 'ai-channels', 'prompt-presets', 'state-analysis', 'state-chain-planned', 'long-memory-planned']
+        capabilities: ['generation-gate', 'floor-binding', 'persistent-storage', 'ai-channels', 'prompt-presets', 'state-analysis', 'state-chain', 'long-memory-planned']
       });
     } catch (error) {
       return res.status(503).json({

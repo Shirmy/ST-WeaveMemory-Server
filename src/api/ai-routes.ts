@@ -183,6 +183,7 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
     const patch: Partial<StateTaskSettings> = {};
     const timeoutSec = optionalInteger(state.timeoutSec, 'state.timeoutSec');
     const maxAttempts = optionalInteger(state.maxAttempts, 'state.maxAttempts');
+    const checkpointInterval = optionalInteger(state.checkpointInterval, 'state.checkpointInterval');
     if (timeoutSec !== undefined) {
       const { min, max } = STATE_TASK_SETTING_LIMITS.timeoutSec;
       if (timeoutSec < min || timeoutSec > max) throw new ApiError(400, 'WM_INVALID_REQUEST', `state.timeoutSec must be between ${min} and ${max}`);
@@ -192,6 +193,11 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
       const { min, max } = STATE_TASK_SETTING_LIMITS.maxAttempts;
       if (maxAttempts < min || maxAttempts > max) throw new ApiError(400, 'WM_INVALID_REQUEST', `state.maxAttempts must be between ${min} and ${max}`);
       patch.maxAttempts = maxAttempts;
+    }
+    if (checkpointInterval !== undefined) {
+      const { min, max } = STATE_TASK_SETTING_LIMITS.checkpointInterval;
+      if (checkpointInterval < min || checkpointInterval > max) throw new ApiError(400, 'WM_INVALID_REQUEST', `state.checkpointInterval must be between ${min} and ${max}`);
+      patch.checkpointInterval = checkpointInterval;
     }
     return { state: await aiConfig.saveStateTaskSettings(patch) };
   }));
