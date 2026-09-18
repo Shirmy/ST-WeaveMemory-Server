@@ -22,10 +22,12 @@ async function main(): Promise<void> {
     const record: FloorRecord = {
       floorKey: 'acceptance-floor-1',
       chatId: 'acceptance-chat',
+      branchId: 'main:acceptance-chat',
       messageIndex: 1,
       swipeId: null,
       contentFingerprint: 'sha256:acceptance',
       content: 'Phase 1 persistence acceptance',
+      active: true,
       status: 'pending',
       createdAt: '2026-09-19T00:00:00.000Z',
       updatedAt: '2026-09-19T00:00:00.000Z'

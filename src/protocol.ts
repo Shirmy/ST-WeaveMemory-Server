@@ -1,6 +1,6 @@
 export const BACKEND_VERSION = '0.1.0';
 export const API_VERSION = 1;
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export type GenerationPrepareRequest = {
   chatId: string;
@@ -15,4 +15,15 @@ export type FloorFinalizeRequest = {
   messageIndex: number;
   swipeId: number | null;
   content: string;
+};
+
+export type ReconcileFloor = {
+  messageIndex: number;
+  swipeId: number | null;
+  content: string;
+};
+
+export type ChatReconcileRequest = {
+  chatId: string;
+  floors: ReconcileFloor[];
 };

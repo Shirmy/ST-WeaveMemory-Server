@@ -180,6 +180,23 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at TEXT NOT NULL
 );
 `
+}, {
+  version: 2,
+  name: 'active-floor-set',
+  sql: `
+CREATE TABLE IF NOT EXISTS chat_active_floors (
+  chat_id TEXT NOT NULL,
+  branch_id TEXT NOT NULL,
+  message_index INTEGER NOT NULL,
+  floor_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (chat_id, branch_id, message_index),
+  FOREIGN KEY (floor_id) REFERENCES floor_variants(floor_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_active_floors_floor
+  ON chat_active_floors(floor_id);
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

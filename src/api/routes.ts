@@ -1,6 +1,6 @@
 import bodyParser from 'body-parser';
 import type { Router } from 'express';
-import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type FloorFinalizeRequest, type GenerationPrepareRequest } from '../protocol';
+import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type ChatReconcileRequest, type FloorFinalizeRequest, type GenerationPrepareRequest } from '../protocol';
 import { MemoryRuntime } from '../core/runtime';
 import type { SqliteDatabase } from '../storage/sqlite-database';
 
@@ -62,6 +62,30 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
       if (!Number.isSafeInteger(payload.messageIndex) || payload.messageIndex < 0) throw new Error('messageIndex is invalid');
       if (!payload.content) throw new Error('content is required');
       return res.json(await runtime.finalizeFloor(payload));
+    } catch (error) {
+      return res.status(400).json({ accepted: false, error: error instanceof Error ? error.message : 'invalid request' });
+    }
+  });
+
+  router.post('/chat/reconcile', json, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const floors = body.floors;
+      if (!Array.isArray(floors)) throw new Error('floors must be an array');
+      const payload: ChatReconcileRequest = {
+        chatId: requiredString(body.chatId, 'chatId'),
+        floors: floors.map((floor: unknown) => {
+          const item = floor && typeof floor === 'object' ? floor as Record<string, unknown> : {};
+          const messageIndex = Number(item.messageIndex);
+          const swipeId = item.swipeId === null || item.swipeId === undefined ? null : Number(item.swipeId);
+          const content = String(item.content ?? '');
+          if (!Number.isSafeInteger(messageIndex) || messageIndex < 0) throw new Error('floor messageIndex is invalid');
+          if (swipeId !== null && (!Number.isSafeInteger(swipeId) || swipeId < 0)) throw new Error('floor swipeId is invalid');
+          if (!content) throw new Error('floor content is required');
+          return { messageIndex, swipeId, content };
+        })
+      };
+      return res.json(await runtime.reconcileChat(payload));
     } catch (error) {
       return res.status(400).json({ accepted: false, error: error instanceof Error ? error.message : 'invalid request' });
     }

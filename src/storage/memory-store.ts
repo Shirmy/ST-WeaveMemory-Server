@@ -1,4 +1,4 @@
-import type { FloorRecord, MemoryStore } from './types';
+import type { ChatReconcileRequest, ChatReconcileResult, FloorRecord, MemoryStore } from './types';
 
 export class InMemoryStore implements MemoryStore {
   #floors = new Map<string, FloorRecord>();
@@ -10,5 +10,22 @@ export class InMemoryStore implements MemoryStore {
   async getFloor(floorKey: string): Promise<FloorRecord | null> {
     const value = this.#floors.get(floorKey);
     return value ? structuredClone(value) : null;
+  }
+
+  async getOrCreateActiveBranch(chatId: string): Promise<string> {
+    return `main:${chatId}`;
+  }
+
+  async reconcileChat(input: ChatReconcileRequest): Promise<ChatReconcileResult> {
+    const branchId = await this.getOrCreateActiveBranch(input.chatId);
+    const activeFloorIds: string[] = [];
+    const reusedFloorIds: string[] = [];
+    const createdFloorIds: string[] = [];
+    for (const floor of input.floors) {
+      const floorKey = `${input.chatId}:${floor.messageIndex}:${floor.swipeId ?? 0}`;
+      activeFloorIds.push(floorKey);
+      createdFloorIds.push(floorKey);
+    }
+    return { chatId: input.chatId, branchId, activeFloorIds, reusedFloorIds, createdFloorIds, staleFloorIds: [] };
   }
 }

@@ -1,6 +1,6 @@
 import { fingerprint } from './fingerprint';
-import type { FloorFinalizeRequest, GenerationPrepareRequest } from '../protocol';
-import type { MemoryStore } from '../storage/types';
+import type { ChatReconcileRequest, FloorFinalizeRequest, GenerationPrepareRequest } from '../protocol';
+import { floorKeyFor, type MemoryStore } from '../storage/types';
 import { PerChatQueue } from '../queue/per-chat-queue';
 
 export class MemoryRuntime {
@@ -9,15 +9,18 @@ export class MemoryRuntime {
   async finalizeFloor(input: FloorFinalizeRequest): Promise<{ accepted: boolean; floorKey: string }> {
     return this.queue.run(input.chatId, async () => {
       const contentFingerprint = fingerprint(input.content);
-      const floorKey = `${input.chatId}:${input.messageIndex}:${input.swipeId ?? 0}:${contentFingerprint}`;
+      const branchId = await this.store.getOrCreateActiveBranch(input.chatId);
+      const floorKey = floorKeyFor(input.chatId, input.messageIndex, input.swipeId, contentFingerprint);
       const now = new Date().toISOString();
       await this.store.upsertFloor({
         floorKey,
         chatId: input.chatId,
+        branchId,
         messageIndex: input.messageIndex,
         swipeId: input.swipeId,
         contentFingerprint,
         content: input.content,
+        active: true,
         status: 'pending',
         createdAt: now,
         updatedAt: now
@@ -25,6 +28,10 @@ export class MemoryRuntime {
       // v0.2: enqueue unified 谱 / 迹 / 事 state analysis here.
       return { accepted: true, floorKey };
     });
+  }
+
+  async reconcileChat(input: ChatReconcileRequest) {
+    return this.queue.run(input.chatId, () => this.store.reconcileChat(input));
   }
 
   async prepareGeneration(input: GenerationPrepareRequest) {
