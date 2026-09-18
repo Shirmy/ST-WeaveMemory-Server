@@ -1,4 +1,4 @@
-import type { ChatReconcileRequest, ChatReconcileResult, FloorRecord, MemoryStore } from './types';
+import type { ActivateBranchResult, BranchRecord, ChatReconcileRequest, ChatReconcileResult, CreateBranchRequest, FloorRecord, MemoryStore } from './types';
 
 export class InMemoryStore implements MemoryStore {
   #floors = new Map<string, FloorRecord>();
@@ -14,6 +14,25 @@ export class InMemoryStore implements MemoryStore {
 
   async getOrCreateActiveBranch(chatId: string): Promise<string> {
     return `main:${chatId}`;
+  }
+
+  async createBranch(input: CreateBranchRequest): Promise<ActivateBranchResult> {
+    const branch: BranchRecord = {
+      branchId: `branch:${input.chatId}:memory`,
+      chatId: input.chatId,
+      parentBranchId: input.sourceBranchId ?? `main:${input.chatId}`,
+      forkFloorId: input.forkFloorId ?? null,
+      active: true,
+      createdAt: new Date().toISOString()
+    };
+    return { branch, activeFloorIds: [] };
+  }
+
+  async activateBranch(chatId: string, branchId: string): Promise<ActivateBranchResult> {
+    return {
+      branch: { branchId, chatId, parentBranchId: null, forkFloorId: null, active: true, createdAt: new Date().toISOString() },
+      activeFloorIds: []
+    };
   }
 
   async reconcileChat(input: ChatReconcileRequest): Promise<ChatReconcileResult> {

@@ -20,6 +20,7 @@ export type ReconcileFloor = {
 
 export type ChatReconcileRequest = {
   chatId: string;
+  branchId?: string;
   floors: ReconcileFloor[];
 };
 
@@ -32,8 +33,28 @@ export type ChatReconcileResult = {
   staleFloorIds: string[];
 };
 
-export function floorKeyFor(chatId: string, messageIndex: number, swipeId: number | null, contentFingerprint: string): string {
-  return `${chatId}:${messageIndex}:${swipeId ?? 0}:${contentFingerprint}`;
+export type BranchRecord = {
+  branchId: string;
+  chatId: string;
+  parentBranchId: string | null;
+  forkFloorId: string | null;
+  active: boolean;
+  createdAt: string;
+};
+
+export type CreateBranchRequest = {
+  chatId: string;
+  sourceBranchId?: string;
+  forkFloorId?: string | null;
+};
+
+export type ActivateBranchResult = {
+  branch: BranchRecord;
+  activeFloorIds: string[];
+};
+
+export function floorKeyFor(chatId: string, branchId: string, messageIndex: number, swipeId: number | null, contentFingerprint: string): string {
+  return `${branchId}:${chatId}:${messageIndex}:${swipeId ?? 0}:${contentFingerprint}`;
 }
 
 export interface MemoryStore {
@@ -41,4 +62,6 @@ export interface MemoryStore {
   getFloor(floorKey: string): Promise<FloorRecord | null>;
   getOrCreateActiveBranch(chatId: string): Promise<string>;
   reconcileChat(input: ChatReconcileRequest): Promise<ChatReconcileResult>;
+  createBranch(input: CreateBranchRequest): Promise<ActivateBranchResult>;
+  activateBranch(chatId: string, branchId: string): Promise<ActivateBranchResult>;
 }

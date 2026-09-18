@@ -1,5 +1,5 @@
 import { fingerprint } from './fingerprint';
-import type { ChatReconcileRequest, FloorFinalizeRequest, GenerationPrepareRequest } from '../protocol';
+import type { ChatReconcileRequest, CreateBranchRequest, FloorFinalizeRequest, GenerationPrepareRequest } from '../protocol';
 import { floorKeyFor, type MemoryStore } from '../storage/types';
 import { PerChatQueue } from '../queue/per-chat-queue';
 
@@ -10,7 +10,7 @@ export class MemoryRuntime {
     return this.queue.run(input.chatId, async () => {
       const contentFingerprint = fingerprint(input.content);
       const branchId = await this.store.getOrCreateActiveBranch(input.chatId);
-      const floorKey = floorKeyFor(input.chatId, input.messageIndex, input.swipeId, contentFingerprint);
+      const floorKey = floorKeyFor(input.chatId, branchId, input.messageIndex, input.swipeId, contentFingerprint);
       const now = new Date().toISOString();
       await this.store.upsertFloor({
         floorKey,
@@ -32,6 +32,14 @@ export class MemoryRuntime {
 
   async reconcileChat(input: ChatReconcileRequest) {
     return this.queue.run(input.chatId, () => this.store.reconcileChat(input));
+  }
+
+  async createBranch(input: CreateBranchRequest) {
+    return this.queue.run(input.chatId, () => this.store.createBranch(input));
+  }
+
+  async activateBranch(chatId: string, branchId: string) {
+    return this.queue.run(chatId, () => this.store.activateBranch(chatId, branchId));
   }
 
   async prepareGeneration(input: GenerationPrepareRequest) {

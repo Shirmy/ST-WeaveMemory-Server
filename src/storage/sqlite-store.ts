@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import type { FloorRecord, MemoryStore } from './types';
 import { fingerprint } from '../core/fingerprint';
-import { floorKeyFor, type ChatReconcileRequest, type ChatReconcileResult } from './types';
+import { floorKeyFor, type ActivateBranchResult, type BranchRecord, type ChatReconcileRequest, type ChatReconcileResult, type CreateBranchRequest } from './types';
 import { SqliteDatabase } from './sqlite-database';
 
 type FloorRow = {
@@ -70,13 +71,19 @@ export class SqliteStore implements MemoryStore {
   }
 
   async getOrCreateActiveBranch(chatId: string): Promise<string> {
+    const existing = await this.database.get<{ active_branch_id: string | null }>(
+      'SELECT active_branch_id FROM chats WHERE chat_id = ?',
+      [chatId]
+    );
+    if (existing?.active_branch_id) return existing.active_branch_id;
+
     const branchId = `main:${chatId}`;
     const now = new Date().toISOString();
     await this.database.transaction(async () => {
       await this.database.run(
         `INSERT INTO chats(chat_id, active_branch_id, created_at, updated_at)
          VALUES (?, ?, ?, ?)
-         ON CONFLICT(chat_id) DO UPDATE SET active_branch_id = excluded.active_branch_id, updated_at = excluded.updated_at`,
+         ON CONFLICT(chat_id) DO UPDATE SET updated_at = excluded.updated_at`,
         [chatId, branchId, now, now]
       );
       await this.database.run(
@@ -89,8 +96,113 @@ export class SqliteStore implements MemoryStore {
     return branchId;
   }
 
+  async createBranch(input: CreateBranchRequest): Promise<ActivateBranchResult> {
+    const sourceBranchId = input.sourceBranchId ?? await this.getOrCreateActiveBranch(input.chatId);
+    const source = await this.database.get<{ branch_id: string; chat_id: string }>(
+      'SELECT branch_id, chat_id FROM branches WHERE branch_id = ? AND chat_id = ?',
+      [sourceBranchId, input.chatId]
+    );
+    if (!source) throw new Error('source branch does not exist for chat');
+
+    const branchId = `branch:${input.chatId}:${randomUUID()}`;
+    const now = new Date().toISOString();
+    const activeFloorIds: string[] = [];
+    await this.database.transaction(async () => {
+      await this.database.run(
+        `INSERT INTO branches(branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at)
+         VALUES (?, ?, ?, ?, 1, ?)`,
+        [branchId, input.chatId, sourceBranchId, input.forkFloorId ?? null, now]
+      );
+
+      const sourceFloors = await this.database.all<FloorRow>(
+        `SELECT floor_id, chat_id, branch_id, message_index, swipe_id, body_fingerprint,
+                content, active, status, created_at, updated_at
+         FROM floor_variants WHERE chat_id = ? AND branch_id = ?`,
+        [input.chatId, sourceBranchId]
+      );
+      for (const floor of sourceFloors) {
+        const newFloorId = floorKeyFor(input.chatId, branchId, floor.message_index, floor.swipe_id, floor.body_fingerprint);
+        await this.database.run(
+          `INSERT INTO floor_variants(
+            floor_id, chat_id, branch_id, message_index, swipe_id, body_fingerprint,
+            content, active, status, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(floor_id) DO NOTHING`,
+          [newFloorId, input.chatId, branchId, floor.message_index, floor.swipe_id, floor.body_fingerprint,
+            floor.content, floor.active, floor.status, floor.created_at, floor.updated_at]
+        );
+      }
+
+      const activeFloors = await this.database.all<{ message_index: number; floor_id: string }>(
+        `SELECT active.message_index, floors.floor_id, floors.swipe_id, floors.body_fingerprint
+         FROM chat_active_floors AS active
+         JOIN floor_variants AS floors ON floors.floor_id = active.floor_id
+         WHERE active.chat_id = ? AND active.branch_id = ? ORDER BY active.message_index`,
+        [input.chatId, sourceBranchId]
+      );
+      for (const floor of activeFloors) {
+        const sourceFloor = await this.database.get<FloorRow>(
+          `SELECT message_index, swipe_id, body_fingerprint FROM floor_variants WHERE floor_id = ?`,
+          [floor.floor_id]
+        );
+        if (!sourceFloor) continue;
+        const newFloorId = floorKeyFor(input.chatId, branchId, sourceFloor.message_index, sourceFloor.swipe_id, sourceFloor.body_fingerprint);
+        activeFloorIds.push(newFloorId);
+        await this.database.run(
+          `INSERT INTO chat_active_floors(chat_id, branch_id, message_index, floor_id, updated_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          [input.chatId, branchId, floor.message_index, newFloorId, now]
+        );
+      }
+      await this.database.run('UPDATE branches SET active = 0 WHERE chat_id = ?', [input.chatId]);
+      await this.database.run('UPDATE branches SET active = 1 WHERE branch_id = ?', [branchId]);
+      await this.database.run('UPDATE chats SET active_branch_id = ?, updated_at = ? WHERE chat_id = ?', [branchId, now, input.chatId]);
+    });
+
+    return {
+      branch: { branchId, chatId: input.chatId, parentBranchId: sourceBranchId, forkFloorId: input.forkFloorId ?? null, active: true, createdAt: now },
+      activeFloorIds
+    };
+  }
+
+  async activateBranch(chatId: string, branchId: string): Promise<ActivateBranchResult> {
+    const branch = await this.database.get<{
+      branch_id: string;
+      chat_id: string;
+      parent_branch_id: string | null;
+      fork_floor_id: string | null;
+      active: number;
+      created_at: string;
+    }>('SELECT branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at FROM branches WHERE branch_id = ? AND chat_id = ?', [branchId, chatId]);
+    if (!branch) throw new Error('branch does not exist for chat');
+    const now = new Date().toISOString();
+    await this.database.transaction(async () => {
+      await this.database.run('UPDATE branches SET active = 0 WHERE chat_id = ?', [chatId]);
+      await this.database.run('UPDATE branches SET active = 1 WHERE branch_id = ?', [branchId]);
+      await this.database.run('UPDATE chats SET active_branch_id = ?, updated_at = ? WHERE chat_id = ?', [branchId, now, chatId]);
+    });
+    const activeRows = await this.database.all<{ floor_id: string }>(
+      `SELECT floor_id FROM chat_active_floors WHERE chat_id = ? AND branch_id = ? ORDER BY message_index`,
+      [chatId, branchId]
+    );
+    const branchRecord: BranchRecord = {
+      branchId: branch.branch_id,
+      chatId: branch.chat_id,
+      parentBranchId: branch.parent_branch_id,
+      forkFloorId: branch.fork_floor_id,
+      active: true,
+      createdAt: branch.created_at
+    };
+    return { branch: branchRecord, activeFloorIds: activeRows.map(row => row.floor_id) };
+  }
+
   async reconcileChat(input: ChatReconcileRequest): Promise<ChatReconcileResult> {
-    const branchId = `main:${input.chatId}`;
+    const branchId = input.branchId ?? await this.getOrCreateActiveBranch(input.chatId);
+    const branch = await this.database.get<{ branch_id: string }>(
+      'SELECT branch_id FROM branches WHERE branch_id = ? AND chat_id = ?',
+      [branchId, input.chatId]
+    );
+    if (!branch) throw new Error('branch does not exist for chat');
     const now = new Date().toISOString();
     const activeFloorIds: string[] = [];
     const reusedFloorIds: string[] = [];
@@ -111,6 +223,7 @@ export class SqliteStore implements MemoryStore {
          ON CONFLICT(branch_id) DO UPDATE SET active = 1`,
         [branchId, input.chatId, now]
       );
+      await this.database.run('UPDATE branches SET active = 0 WHERE chat_id = ? AND branch_id <> ?', [input.chatId, branchId]);
 
       const existing = await this.database.all<FloorRow & { branch_id: string }>(
         `SELECT floor_id, chat_id, branch_id, message_index, swipe_id, body_fingerprint,
@@ -128,7 +241,7 @@ export class SqliteStore implements MemoryStore {
         if (seenLocators.has(locator)) throw new Error(`duplicate floor locator: ${locator}`);
         seenLocators.add(locator);
         const contentFingerprint = fingerprint(floor.content);
-        const floorId = floorKeyFor(input.chatId, floor.messageIndex, floor.swipeId, contentFingerprint);
+        const floorId = floorKeyFor(input.chatId, branchId, floor.messageIndex, floor.swipeId, contentFingerprint);
         incomingIds.add(floorId);
         activeFloorIds.push(floorId);
         const current = byFloorId.get(floorId);

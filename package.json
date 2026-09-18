@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test:persistence": "tsc -p tsconfig.test.json && node .test-dist/tests/persistence-acceptance.js",
-    "test:floor-reconcile": "tsc -p tsconfig.test.json && node .test-dist/tests/floor-reconcile-acceptance.js"
+    "test:floor-reconcile": "tsc -p tsconfig.test.json && node .test-dist/tests/floor-reconcile-acceptance.js",
+    "test:branch": "tsc -p tsconfig.test.json && node .test-dist/tests/branch-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",

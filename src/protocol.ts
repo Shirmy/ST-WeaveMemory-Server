@@ -25,5 +25,17 @@ export type ReconcileFloor = {
 
 export type ChatReconcileRequest = {
   chatId: string;
+  branchId?: string;
   floors: ReconcileFloor[];
+};
+
+export type CreateBranchRequest = {
+  chatId: string;
+  sourceBranchId?: string;
+  forkFloorId?: string | null;
+};
+
+export type ActivateBranchRequest = {
+  chatId: string;
+  branchId: string;
 };

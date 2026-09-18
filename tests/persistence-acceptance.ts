@@ -20,7 +20,7 @@ async function main(): Promise<void> {
     await runMigrations(firstDatabase, paths);
     const firstStore = new SqliteStore(firstDatabase);
     const record: FloorRecord = {
-      floorKey: 'acceptance-floor-1',
+      floorKey: 'main:acceptance-chat:acceptance-floor-1',
       chatId: 'acceptance-chat',
       branchId: 'main:acceptance-chat',
       messageIndex: 1,

@@ -31,8 +31,9 @@ async function main(): Promise<void> {
     assert.equal(first.createdFloorIds.length, 2);
     assert.equal(first.reusedFloorIds.length, 0);
 
-    const stableId = floorKeyFor('phase2-chat', 4, 0, fingerprint('stable floor'));
-    const oldSwipeId = floorKeyFor('phase2-chat', 2, 0, fingerprint('first swipe'));
+    const branchId = 'main:phase2-chat';
+    const stableId = floorKeyFor('phase2-chat', branchId, 4, 0, fingerprint('stable floor'));
+    const oldSwipeId = floorKeyFor('phase2-chat', branchId, 2, 0, fingerprint('first swipe'));
     const second = await store.reconcileChat({
       chatId: 'phase2-chat',
       floors: [
@@ -40,7 +41,7 @@ async function main(): Promise<void> {
         { messageIndex: 4, swipeId: 0, content: 'stable floor' }
       ]
     });
-    const newSwipeId = floorKeyFor('phase2-chat', 2, 1, fingerprint('second swipe'));
+    const newSwipeId = floorKeyFor('phase2-chat', branchId, 2, 1, fingerprint('second swipe'));
     assert.deepEqual(second.reusedFloorIds, [stableId]);
     assert.deepEqual(second.createdFloorIds, [newSwipeId]);
     assert.deepEqual(second.staleFloorIds, []);

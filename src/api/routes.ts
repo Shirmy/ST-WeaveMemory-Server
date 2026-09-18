@@ -1,6 +1,6 @@
 import bodyParser from 'body-parser';
 import type { Router } from 'express';
-import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type ChatReconcileRequest, type FloorFinalizeRequest, type GenerationPrepareRequest } from '../protocol';
+import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type ActivateBranchRequest, type ChatReconcileRequest, type CreateBranchRequest, type FloorFinalizeRequest, type GenerationPrepareRequest } from '../protocol';
 import { MemoryRuntime } from '../core/runtime';
 import type { SqliteDatabase } from '../storage/sqlite-database';
 
@@ -74,6 +74,7 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
       if (!Array.isArray(floors)) throw new Error('floors must be an array');
       const payload: ChatReconcileRequest = {
         chatId: requiredString(body.chatId, 'chatId'),
+        branchId: body.branchId === undefined || body.branchId === null ? undefined : requiredString(body.branchId, 'branchId'),
         floors: floors.map((floor: unknown) => {
           const item = floor && typeof floor === 'object' ? floor as Record<string, unknown> : {};
           const messageIndex = Number(item.messageIndex);
@@ -86,6 +87,33 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
         })
       };
       return res.json(await runtime.reconcileChat(payload));
+    } catch (error) {
+      return res.status(400).json({ accepted: false, error: error instanceof Error ? error.message : 'invalid request' });
+    }
+  });
+
+  router.post('/branch/create', json, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const payload: CreateBranchRequest = {
+        chatId: requiredString(body.chatId, 'chatId'),
+        sourceBranchId: body.sourceBranchId === undefined || body.sourceBranchId === null ? undefined : requiredString(body.sourceBranchId, 'sourceBranchId'),
+        forkFloorId: body.forkFloorId === undefined ? null : String(body.forkFloorId)
+      };
+      return res.json(await runtime.createBranch(payload));
+    } catch (error) {
+      return res.status(400).json({ accepted: false, error: error instanceof Error ? error.message : 'invalid request' });
+    }
+  });
+
+  router.post('/branch/activate', json, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const payload: ActivateBranchRequest = {
+        chatId: requiredString(body.chatId, 'chatId'),
+        branchId: requiredString(body.branchId, 'branchId')
+      };
+      return res.json(await runtime.activateBranch(payload.chatId, payload.branchId));
     } catch (error) {
       return res.status(400).json({ accepted: false, error: error instanceof Error ? error.message : 'invalid request' });
     }
