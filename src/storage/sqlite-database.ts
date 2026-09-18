@@ -54,6 +54,39 @@ export class SqliteDatabase {
   async run(sql: string, params: unknown[] = []): Promise<SqliteRunResult> {
     return run(this.database, sql, params);
   }
+
+  async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
+    return get<T>(this.database, sql, params);
+  }
+
+  async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
+    return all<T>(this.database, sql, params);
+  }
+
+  async exec(sql: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      this.database.exec(sql, error => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+  }
+
+  async transaction<T>(work: () => Promise<T>): Promise<T> {
+    await this.run('BEGIN IMMEDIATE');
+    try {
+      const result = await work();
+      await this.run('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await this.run('ROLLBACK');
+      } catch {
+        // Preserve the original failure. The connection will be checked on the next operation.
+      }
+      throw error;
+    }
+  }
 }
 
 function run(database: sqlite3.Database, sql: string, params: unknown[] = []): Promise<SqliteRunResult> {
@@ -70,6 +103,15 @@ function get<T>(database: sqlite3.Database, sql: string, params: unknown[] = [])
     database.get(sql, params, (error, row: T | undefined) => {
       if (error) reject(error);
       else resolve(row);
+    });
+  });
+}
+
+function all<T>(database: sqlite3.Database, sql: string, params: unknown[] = []): Promise<T[]> {
+  return new Promise((resolve, reject) => {
+    database.all(sql, params, (error, rows: T[]) => {
+      if (error) reject(error);
+      else resolve(rows);
     });
   });
 }
