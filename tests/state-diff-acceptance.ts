@@ -100,7 +100,7 @@ function main(): void {
   assert.notEqual(snapshotFingerprint(sameLater.snapshot), snapshotFingerprint(first.snapshot));
   assert.deepEqual(deriveKnownCharacters(second.snapshot).map(character => character.characterId).sort(), ['Alice', 'bob']);
 
-  // replay performance: 1000 deltas applied in place to one working copy
+  // replay performance (roadmap §66): 1000 deltas applied in place to one working copy in under 100 ms
   let current = emptySnapshot('branch-A');
   const deltas: ReturnType<typeof diffValues>[] = [];
   for (let index = 0; index < 1000; index += 1) {
@@ -112,13 +112,13 @@ function main(): void {
     deltas.push(diffValues(current, next.snapshot));
     current = next.snapshot;
   }
-  const started = performance.now();
   let replayed: StateSnapshot = structuredClone(emptySnapshot('branch-A'));
+  const started = performance.now();
   for (const delta of deltas) replayed = applyChangesInPlace(replayed, delta);
   const elapsed = performance.now() - started;
   assert.deepEqual(replayed, current);
   assert.equal(snapshotFingerprint(replayed), snapshotFingerprint(current));
-  assert.ok(elapsed < 500, `replaying 1000 deltas took ${elapsed.toFixed(1)} ms`);
+  assert.ok(elapsed < 100, `replaying 1000 deltas took ${elapsed.toFixed(1)} ms; roadmap §66 requires under 100 ms`);
   console.log(`Phase 5 state diff acceptance passed (1000-delta replay ${elapsed.toFixed(1)} ms)`);
 }
 

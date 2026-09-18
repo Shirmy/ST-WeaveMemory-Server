@@ -1,4 +1,5 @@
 import { emptySnapshot } from '../state/apply';
+import type { TrustedPrefix } from '../state/chain-engine';
 import type { KnownCharacter, StateSnapshot } from '../state/schema';
 import type { StateNodeRecord } from '../storage/state-chain-store';
 
@@ -19,6 +20,8 @@ export type StateAnalysisContext = {
   knownCharacters: KnownCharacter[];
   /** The state node the floor is analysed against (Phase 5 chain); null at the chain start. */
   previousNode?: StateNodeRecord | null;
+  /** The trusted prefix the context was derived from, so callers can reuse it instead of recomputing. */
+  prefix?: TrustedPrefix;
   /** Set when the chain before the floor is not usable yet (roadmap §7: no gaps in the chain). */
   blocked?: StateContextBlock;
 };

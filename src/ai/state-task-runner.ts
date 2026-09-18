@@ -2,7 +2,7 @@ import { dependencyFingerprint } from '../core/fingerprint';
 import { STATE_PROTOCOL_VERSION } from '../protocol';
 import type { PerChatQueue } from '../queue/per-chat-queue';
 import { StateApplyError } from '../state/apply';
-import { StateChainError, type StateChainEngine } from '../state/chain-engine';
+import { StateChainError, validNodeInPrefix, type StateChainEngine } from '../state/chain-engine';
 import {
   normalizeStateAnalysisResponse,
   STATE_SCHEMA_VERSION,
@@ -172,7 +172,7 @@ export class StateTaskRunner {
       if (!input.force) {
         const priorJob = (await tasks.findSucceededJobs(input.floorId)).find(job => job.payload.dependencyFingerprint === dependency && job.result);
         if (chain) {
-          const validNode = await chain.validNodeForFloor(input.chatId, input.branchId, input.floorId);
+          const validNode = loaded.prefix ? validNodeInPrefix(loaded.prefix, input.floorId) : await chain.validNodeForFloor(input.chatId, input.branchId, input.floorId);
           if (validNode && validNode.dependencyFingerprint === dependency) {
             await store.updateFloorStatus(input.floorId, 'synced');
             return { jobId: priorJob?.jobId ?? null, stateNodeId: validNode.stateNodeId, outcome: 'reused' };
@@ -375,7 +375,7 @@ export class StateTaskRunner {
     const dependency = dependencyOf(floor.contentFingerprint, loaded, prompt.promptVersion);
     const manual = current.payload.reason === 'manual';
     if (chain && !manual) {
-      const validNode = await chain.validNodeForFloor(current.chatId, current.branchId, current.floorId);
+      const validNode = loaded.prefix ? validNodeInPrefix(loaded.prefix, current.floorId) : await chain.validNodeForFloor(current.chatId, current.branchId, current.floorId);
       if (validNode && validNode.dependencyFingerprint === dependency) {
         await tasks.updateJob(current.jobId, { status: 'cancelled', errorCode: 'WM_TASK_CANCELLED', errorMessage: 'floor already has a valid state node for this dependency', finishedAt: now });
         await store.updateFloorStatus(current.floorId, 'synced');

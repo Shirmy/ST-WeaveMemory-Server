@@ -128,29 +128,32 @@ export class StateChainEngine {
     return { chatId, branchId, positions, firstInvalidIndex, head: previous };
   }
 
-  /** Which state a floor at `messageIndex` must be analysed against. */
-  async resolvePrevious(chatId: string, branchId: string, messageIndex: number): Promise<PreviousResolution> {
+  /** Which state a floor at `messageIndex` must be analysed against, plus the prefix it was derived from. */
+  async resolvePreviousWithPrefix(chatId: string, branchId: string, messageIndex: number): Promise<{ resolution: PreviousResolution; prefix: TrustedPrefix }> {
     const prefix = await this.trustedPrefix(chatId, branchId);
     const before = prefix.positions.filter(position => position.messageIndex < messageIndex);
     const last = before.at(-1);
-    if (!last) return { kind: 'start' };
+    if (!last) return { resolution: { kind: 'start' }, prefix };
     const floor = { messageIndex: last.messageIndex, floorId: last.floorId };
-    if (last.valid && last.node) return { kind: 'ready', node: last.node, floor };
+    if (last.valid && last.node) return { resolution: { kind: 'ready', node: last.node, floor }, prefix };
     const reason = last.node ? 'its state node no longer matches the chain before it' : 'it has no synced state node';
-    return { kind: 'blocked', floor, reason };
+    return { resolution: { kind: 'blocked', floor, reason }, prefix };
+  }
+
+  async resolvePrevious(chatId: string, branchId: string, messageIndex: number): Promise<PreviousResolution> {
+    return (await this.resolvePreviousWithPrefix(chatId, branchId, messageIndex)).resolution;
   }
 
   /** The node representing `floorId` inside the trusted prefix, if any. */
   async validNodeForFloor(chatId: string, branchId: string, floorId: string): Promise<StateNodeRecord | null> {
-    const prefix = await this.trustedPrefix(chatId, branchId);
-    const position = prefix.positions.find(item => item.floorId === floorId);
-    return position?.valid ? position.node : null;
+    return validNodeInPrefix(await this.trustedPrefix(chatId, branchId), floorId);
   }
 
   async snapshotAt(node: StateNodeRecord): Promise<ReplayResult> {
     const { chain } = this.deps;
     const head = await chain.getBranchHead(node.branchId);
-    if (head && head.stateNodeId === node.stateNodeId && head.snapshotFingerprint === node.stateFingerprint) {
+    // The head cache is only an accelerator: it must name this node and its content must hash to the node's fingerprint.
+    if (head && head.stateNodeId === node.stateNodeId && snapshotFingerprint(head.snapshot) === node.stateFingerprint) {
       return { snapshot: head.snapshot, checkpointNodeId: null, appliedDeltas: 0, fromHeadCache: true };
     }
     const byId = new Map((await chain.listNodes(node.branchId)).map(item => [item.stateNodeId, item]));
@@ -161,7 +164,13 @@ export class StateChainEngine {
     while (cursor) {
       if (cursor.checkpointId) {
         const checkpoint = await chain.getCheckpoint(cursor.checkpointId);
-        if (!checkpoint) throw new StateChainError('WM_STATE_SYNC_FAILED', `checkpoint ${cursor.checkpointId} is missing`);
+        if (!checkpoint) throw new StateChainError('WM_STATE_SYNC_FAILED', `checkpoint ${cursor.checkpointId} of node ${cursor.stateNodeId} is missing`);
+        if (checkpoint.snapshotFingerprint !== cursor.stateFingerprint) {
+          throw new StateChainError('WM_STATE_SYNC_FAILED', `checkpoint ${cursor.checkpointId} does not match the fingerprint of node ${cursor.stateNodeId}`);
+        }
+        if (snapshotFingerprint(checkpoint.snapshot) !== checkpoint.snapshotFingerprint) {
+          throw new StateChainError('WM_STATE_SYNC_FAILED', `checkpoint ${cursor.checkpointId} is corrupted; its snapshot does not hash to its fingerprint`);
+        }
         base = checkpoint.snapshot;
         checkpointNodeId = cursor.stateNodeId;
         break;
@@ -287,14 +296,18 @@ export class StateChainEngine {
   }
 
   private async nodesSinceCheckpoint(previous: StateNodeRecord | null): Promise<number> {
-    if (!previous) return 0;
-    const byId = new Map((await this.deps.chain.listNodes(previous.branchId)).map(item => [item.stateNodeId, item]));
     let count = 0;
     let cursor: StateNodeRecord | null = previous;
     while (cursor && !cursor.checkpointId) {
       count += 1;
-      cursor = cursor.previousStateNodeId ? byId.get(cursor.previousStateNodeId) ?? null : null;
+      cursor = cursor.previousStateNodeId ? await this.deps.chain.getNode(cursor.previousStateNodeId) : null;
     }
     return count;
   }
+}
+
+/** The node representing `floorId` inside an already computed trusted prefix, if any. */
+export function validNodeInPrefix(prefix: TrustedPrefix, floorId: string): StateNodeRecord | null {
+  const position = prefix.positions.find(item => item.floorId === floorId);
+  return position?.valid ? position.node : null;
 }

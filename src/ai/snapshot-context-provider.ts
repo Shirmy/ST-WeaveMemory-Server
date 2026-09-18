@@ -12,7 +12,7 @@ export class SnapshotContextProvider implements StateContextProvider {
   constructor(private readonly chain: StateChainEngine, private readonly tasks: StateTaskStore) {}
 
   async load(target: StateContextTarget): Promise<StateAnalysisContext> {
-    const resolution = await this.chain.resolvePrevious(target.chatId, target.branchId, target.messageIndex);
+    const { resolution, prefix } = await this.chain.resolvePreviousWithPrefix(target.chatId, target.branchId, target.messageIndex);
     if (resolution.kind === 'blocked') {
       const pending = await this.tasks.findActiveJobForFloor(resolution.floor.floorId);
       return {
@@ -21,6 +21,7 @@ export class SnapshotContextProvider implements StateContextProvider {
         lockedPaths: [],
         knownCharacters: [],
         previousNode: null,
+        prefix,
         blocked: {
           code: 'WM_STATE_PENDING',
           message: `floor ${resolution.floor.messageIndex} has no valid state node (${resolution.reason})`,
@@ -34,7 +35,8 @@ export class SnapshotContextProvider implements StateContextProvider {
         previousStateFingerprint: null,
         lockedPaths: [],
         knownCharacters: [],
-        previousNode: null
+        previousNode: null,
+        prefix
       };
     }
     const { snapshot } = await this.chain.snapshotAt(resolution.node);
@@ -43,7 +45,8 @@ export class SnapshotContextProvider implements StateContextProvider {
       previousStateFingerprint: resolution.node.stateFingerprint,
       lockedPaths: deriveLockedPaths(snapshot),
       knownCharacters: deriveKnownCharacters(snapshot),
-      previousNode: resolution.node
+      previousNode: resolution.node,
+      prefix
     };
   }
 }
