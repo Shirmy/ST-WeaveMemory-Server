@@ -54,6 +54,12 @@ export type ActivateBranchResult = {
   activeFloorIds: string[];
 };
 
+export type HostChatBindingRequest = {
+  chatId: string;
+  mainChatId?: string | null;
+  forkFloor?: ReconcileFloor | null;
+};
+
 export function floorKeyFor(chatId: string, branchId: string, messageIndex: number, swipeId: number | null, contentFingerprint: string): string {
   return `${branchId}:${chatId}:${messageIndex}:${swipeId ?? 0}:${contentFingerprint}`;
 }
@@ -65,4 +71,5 @@ export interface MemoryStore {
   reconcileChat(input: ChatReconcileRequest): Promise<ChatReconcileResult>;
   createBranch(input: CreateBranchRequest): Promise<ActivateBranchResult>;
   activateBranch(chatId: string, branchId: string): Promise<ActivateBranchResult>;
+  bindHostChat(input: HostChatBindingRequest): Promise<ActivateBranchResult>;
 }

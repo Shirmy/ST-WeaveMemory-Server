@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FloorRecord, MemoryStore } from './types';
 import { fingerprint } from '../core/fingerprint';
-import { floorKeyFor, type ActivateBranchResult, type BranchRecord, type ChatReconcileRequest, type ChatReconcileResult, type CreateBranchRequest } from './types';
+import { floorKeyFor, type ActivateBranchResult, type BranchRecord, type ChatReconcileRequest, type ChatReconcileResult, type CreateBranchRequest, type HostChatBindingRequest } from './types';
 import { SqliteDatabase } from './sqlite-database';
 
 type FloorRow = {
@@ -181,7 +181,7 @@ export class SqliteStore implements MemoryStore {
       fork_floor_id: string | null;
       active: number;
       created_at: string;
-    }>('SELECT branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at FROM branches WHERE branch_id = ? AND chat_id = ?', [branchId, chatId]);
+    }>('SELECT branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at FROM branches WHERE branch_id = ?', [branchId]);
     if (!branch) throw new Error('branch does not exist for chat');
     const now = new Date().toISOString();
     await this.database.transaction(async () => {
@@ -207,8 +207,8 @@ export class SqliteStore implements MemoryStore {
   async reconcileChat(input: ChatReconcileRequest): Promise<ChatReconcileResult> {
     const branchId = input.branchId ?? await this.getOrCreateActiveBranch(input.chatId);
     const branch = await this.database.get<{ branch_id: string }>(
-      'SELECT branch_id FROM branches WHERE branch_id = ? AND chat_id = ?',
-      [branchId, input.chatId]
+      'SELECT branch_id FROM branches WHERE branch_id = ?',
+      [branchId]
     );
     if (!branch) throw new Error('branch does not exist for chat');
     const now = new Date().toISOString();
@@ -308,8 +308,8 @@ export class SqliteStore implements MemoryStore {
       fork_floor_id: string | null; active: number; created_at: string;
     }>(
       `SELECT branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at
-       FROM branches WHERE branch_id = ? AND chat_id = ?`,
-      [branchId, input.chatId]
+       FROM branches WHERE branch_id = ?`,
+      [branchId]
     );
     if (!branchRecord) throw new Error('branch does not exist for chat');
     return {
@@ -328,5 +328,68 @@ export class SqliteStore implements MemoryStore {
       createdFloorIds,
       staleFloorIds: [...new Set(staleFloorIds)]
     };
+  }
+
+  async bindHostChat(input: HostChatBindingRequest): Promise<ActivateBranchResult> {
+    const existing = await this.database.get<{ branch_id: string }>(
+      'SELECT branch_id FROM host_chat_bindings WHERE host_chat_id = ?', [input.chatId]
+    );
+    if (existing) {
+      const branch = await this.database.get<{
+        branch_id: string; chat_id: string; parent_branch_id: string | null;
+        fork_floor_id: string | null; active: number; created_at: string;
+      }>('SELECT branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at FROM branches WHERE branch_id = ?', [existing.branch_id]);
+      if (!branch) throw new Error('host chat binding points to missing branch');
+      const activeRows = await this.database.all<{ floor_id: string }>(
+        'SELECT floor_id FROM chat_active_floors WHERE chat_id = ? AND branch_id = ? ORDER BY message_index',
+        [input.chatId, existing.branch_id]
+      );
+      return {
+        branch: {
+          branchId: branch.branch_id, chatId: branch.chat_id,
+          parentBranchId: branch.parent_branch_id, forkFloorId: branch.fork_floor_id,
+          active: branch.active === 1, createdAt: branch.created_at
+        },
+        activeFloorIds: activeRows.map(row => row.floor_id)
+      };
+    }
+
+    const mainChatId = input.mainChatId ?? null;
+    if (!mainChatId) {
+      const sourceBranchId = await this.getOrCreateActiveBranch(input.chatId);
+      const now = new Date().toISOString();
+      await this.database.run(
+        `INSERT INTO host_chat_bindings(host_chat_id, branch_id, parent_host_chat_id, main_chat_id, created_at, updated_at)
+         VALUES (?, ?, NULL, NULL, ?, ?)`, [input.chatId, sourceBranchId, now, now]
+      );
+      return this.activateBranch(input.chatId, sourceBranchId);
+    }
+
+    const parentBinding = await this.database.get<{ branch_id: string }>(
+      'SELECT branch_id FROM host_chat_bindings WHERE host_chat_id = ?', [mainChatId]
+    );
+    const sourceBranchId = parentBinding?.branch_id ?? await this.getOrCreateActiveBranch(mainChatId);
+    if (!parentBinding) {
+      const now = new Date().toISOString();
+      await this.database.run(
+        `INSERT INTO host_chat_bindings(host_chat_id, branch_id, parent_host_chat_id, main_chat_id, created_at, updated_at)
+         VALUES (?, ?, NULL, NULL, ?, ?)`, [mainChatId, sourceBranchId, now, now]
+      );
+    }
+    if (!input.forkFloor) throw new Error('forkFloor is required for a host branch');
+    const fork = await this.database.get<{ floor_id: string }>(
+      `SELECT floor_id FROM floor_variants
+       WHERE chat_id = ? AND branch_id = ? AND message_index = ?
+         AND swipe_id IS ? AND body_fingerprint = ?`,
+      [mainChatId, sourceBranchId, input.forkFloor.messageIndex, input.forkFloor.swipeId, fingerprint(input.forkFloor.content)]
+    );
+    if (!fork) throw new Error('host branch fork floor does not belong to parent chat branch');
+    const created = await this.createBranch({ chatId: mainChatId, sourceBranchId, forkFloorId: fork.floor_id });
+    const now = new Date().toISOString();
+    await this.database.run(
+      `INSERT INTO host_chat_bindings(host_chat_id, branch_id, parent_host_chat_id, main_chat_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`, [input.chatId, created.branch.branchId, mainChatId, mainChatId, now, now]
+    );
+    return { branch: created.branch, activeFloorIds: [] };
   }
 }

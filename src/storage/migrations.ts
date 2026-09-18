@@ -197,6 +197,23 @@ CREATE TABLE IF NOT EXISTS chat_active_floors (
 CREATE INDEX IF NOT EXISTS idx_chat_active_floors_floor
   ON chat_active_floors(floor_id);
 `
+}, {
+  version: 3,
+  name: 'host-chat-branch-bindings',
+  sql: `
+CREATE TABLE IF NOT EXISTS host_chat_bindings (
+  host_chat_id TEXT PRIMARY KEY,
+  branch_id TEXT NOT NULL,
+  parent_host_chat_id TEXT,
+  main_chat_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (branch_id) REFERENCES branches(branch_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_chat_bindings_branch
+  ON host_chat_bindings(branch_id);
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

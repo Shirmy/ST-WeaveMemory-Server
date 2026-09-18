@@ -1,6 +1,6 @@
 import bodyParser from 'body-parser';
 import type { Router } from 'express';
-import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type ActivateBranchRequest, type ChatReconcileRequest, type CreateBranchRequest, type FloorFinalizeRequest, type GenerationPrepareRequest } from '../protocol';
+import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type ActivateBranchRequest, type ChatReconcileRequest, type CreateBranchRequest, type FloorFinalizeRequest, type GenerationPrepareRequest, type HostChatBindingRequest } from '../protocol';
 import { MemoryRuntime } from '../core/runtime';
 import type { SqliteDatabase } from '../storage/sqlite-database';
 
@@ -55,6 +55,7 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
       const body = req.body ?? {};
       const payload: FloorFinalizeRequest = {
         chatId: requiredString(body.chatId, 'chatId'),
+        branchId: body.branchId === undefined || body.branchId === null ? undefined : requiredString(body.branchId, 'branchId'),
         messageIndex: Number(body.messageIndex),
         swipeId: Number.isSafeInteger(body.swipeId) ? body.swipeId : null,
         content: String(body.content ?? '')
@@ -114,6 +115,32 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
         branchId: requiredString(body.branchId, 'branchId')
       };
       return res.json(await runtime.activateBranch(payload.chatId, payload.branchId));
+    } catch (error) {
+      return res.status(400).json({ accepted: false, error: error instanceof Error ? error.message : 'invalid request' });
+    }
+  });
+
+  router.post('/host-chat/bind', json, async (req, res) => {
+    try {
+      const body = req.body ?? {};
+      const fork = body.forkFloor;
+      let forkFloor: HostChatBindingRequest['forkFloor'] = null;
+      if (fork !== undefined && fork !== null) {
+        if (typeof fork !== 'object') throw new Error('forkFloor is invalid');
+        const messageIndex = Number(fork.messageIndex);
+        const swipeId = fork.swipeId === null || fork.swipeId === undefined ? null : Number(fork.swipeId);
+        const content = String(fork.content ?? '');
+        if (!Number.isSafeInteger(messageIndex) || messageIndex < 0) throw new Error('forkFloor messageIndex is invalid');
+        if (swipeId !== null && (!Number.isSafeInteger(swipeId) || swipeId < 0)) throw new Error('forkFloor swipeId is invalid');
+        if (!content) throw new Error('forkFloor content is required');
+        forkFloor = { messageIndex, swipeId, content };
+      }
+      const payload: HostChatBindingRequest = {
+        chatId: requiredString(body.chatId, 'chatId'),
+        mainChatId: body.mainChatId === undefined || body.mainChatId === null || body.mainChatId === '' ? null : requiredString(body.mainChatId, 'mainChatId'),
+        forkFloor
+      };
+      return res.json(await runtime.bindHostChat(payload));
     } catch (error) {
       return res.status(400).json({ accepted: false, error: error instanceof Error ? error.message : 'invalid request' });
     }
