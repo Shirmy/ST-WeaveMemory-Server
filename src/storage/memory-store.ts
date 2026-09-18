@@ -21,7 +21,7 @@ export class InMemoryStore implements MemoryStore {
       branchId: `branch:${input.chatId}:memory`,
       chatId: input.chatId,
       parentBranchId: input.sourceBranchId ?? `main:${input.chatId}`,
-      forkFloorId: input.forkFloorId ?? null,
+      forkFloorId: input.forkFloorId,
       active: true,
       createdAt: new Date().toISOString()
     };
@@ -45,6 +45,14 @@ export class InMemoryStore implements MemoryStore {
       activeFloorIds.push(floorKey);
       createdFloorIds.push(floorKey);
     }
-    return { chatId: input.chatId, branchId, activeFloorIds, reusedFloorIds, createdFloorIds, staleFloorIds: [] };
+    return {
+      chatId: input.chatId,
+      branchId,
+      branch: { branchId, chatId: input.chatId, parentBranchId: null, forkFloorId: null, active: true, createdAt: new Date().toISOString() },
+      activeFloorIds,
+      reusedFloorIds,
+      createdFloorIds,
+      staleFloorIds: []
+    };
   }
 }

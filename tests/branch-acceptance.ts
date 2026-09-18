@@ -35,7 +35,7 @@ async function main(): Promise<void> {
     });
     assert.equal(restoredSwipe0.reusedFloorIds[0], swipeIds.get(0));
 
-    const branchB = await store.createBranch({ chatId, sourceBranchId: mainBranchId, forkFloorId: swipeIds.get(0) });
+    const branchB = await store.createBranch({ chatId, sourceBranchId: mainBranchId, forkFloorId: swipeIds.get(0)! });
     assert.notEqual(branchB.branch.branchId, mainBranchId);
     assert.equal(branchB.branch.parentBranchId, mainBranchId);
     assert.equal(branchB.activeFloorIds.length, 1);

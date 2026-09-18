@@ -98,7 +98,7 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
       const payload: CreateBranchRequest = {
         chatId: requiredString(body.chatId, 'chatId'),
         sourceBranchId: body.sourceBranchId === undefined || body.sourceBranchId === null ? undefined : requiredString(body.sourceBranchId, 'sourceBranchId'),
-        forkFloorId: body.forkFloorId === undefined ? null : String(body.forkFloorId)
+        forkFloorId: requiredString(body.forkFloorId, 'forkFloorId')
       };
       return res.json(await runtime.createBranch(payload));
     } catch (error) {

@@ -32,7 +32,7 @@ export type ChatReconcileRequest = {
 export type CreateBranchRequest = {
   chatId: string;
   sourceBranchId?: string;
-  forkFloorId?: string | null;
+  forkFloorId: string;
 };
 
 export type ActivateBranchRequest = {

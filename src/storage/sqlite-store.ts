@@ -104,6 +104,14 @@ export class SqliteStore implements MemoryStore {
     );
     if (!source) throw new Error('source branch does not exist for chat');
 
+    const forkFloorId = input.forkFloorId;
+    const forkFloor = await this.database.get<{ floor_id: string; message_index: number }>(
+      `SELECT floor_id, message_index FROM floor_variants
+       WHERE floor_id = ? AND chat_id = ? AND branch_id = ?`,
+      [forkFloorId, input.chatId, sourceBranchId]
+    );
+    if (!forkFloor) throw new Error('forkFloorId must belong to source branch');
+
     const branchId = `branch:${input.chatId}:${randomUUID()}`;
     const now = new Date().toISOString();
     const activeFloorIds: string[] = [];
@@ -111,14 +119,14 @@ export class SqliteStore implements MemoryStore {
       await this.database.run(
         `INSERT INTO branches(branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at)
          VALUES (?, ?, ?, ?, 1, ?)`,
-        [branchId, input.chatId, sourceBranchId, input.forkFloorId ?? null, now]
+        [branchId, input.chatId, sourceBranchId, forkFloorId, now]
       );
 
       const sourceFloors = await this.database.all<FloorRow>(
         `SELECT floor_id, chat_id, branch_id, message_index, swipe_id, body_fingerprint,
                 content, active, status, created_at, updated_at
-         FROM floor_variants WHERE chat_id = ? AND branch_id = ?`,
-        [input.chatId, sourceBranchId]
+         FROM floor_variants WHERE chat_id = ? AND branch_id = ? AND message_index <= ?`,
+        [input.chatId, sourceBranchId, forkFloor.message_index]
       );
       for (const floor of sourceFloors) {
         const newFloorId = floorKeyFor(input.chatId, branchId, floor.message_index, floor.swipe_id, floor.body_fingerprint);
@@ -137,8 +145,8 @@ export class SqliteStore implements MemoryStore {
         `SELECT active.message_index, floors.floor_id, floors.swipe_id, floors.body_fingerprint
          FROM chat_active_floors AS active
          JOIN floor_variants AS floors ON floors.floor_id = active.floor_id
-         WHERE active.chat_id = ? AND active.branch_id = ? ORDER BY active.message_index`,
-        [input.chatId, sourceBranchId]
+         WHERE active.chat_id = ? AND active.branch_id = ? AND active.message_index <= ? ORDER BY active.message_index`,
+        [input.chatId, sourceBranchId, forkFloor.message_index]
       );
       for (const floor of activeFloors) {
         const sourceFloor = await this.database.get<FloorRow>(
@@ -160,7 +168,7 @@ export class SqliteStore implements MemoryStore {
     });
 
     return {
-      branch: { branchId, chatId: input.chatId, parentBranchId: sourceBranchId, forkFloorId: input.forkFloorId ?? null, active: true, createdAt: now },
+      branch: { branchId, chatId: input.chatId, parentBranchId: sourceBranchId, forkFloorId, active: true, createdAt: now },
       activeFloorIds
     };
   }
@@ -295,9 +303,26 @@ export class SqliteStore implements MemoryStore {
       }
     });
 
+    const branchRecord = await this.database.get<{
+      branch_id: string; chat_id: string; parent_branch_id: string | null;
+      fork_floor_id: string | null; active: number; created_at: string;
+    }>(
+      `SELECT branch_id, chat_id, parent_branch_id, fork_floor_id, active, created_at
+       FROM branches WHERE branch_id = ? AND chat_id = ?`,
+      [branchId, input.chatId]
+    );
+    if (!branchRecord) throw new Error('branch does not exist for chat');
     return {
       chatId: input.chatId,
       branchId,
+      branch: {
+        branchId: branchRecord.branch_id,
+        chatId: branchRecord.chat_id,
+        parentBranchId: branchRecord.parent_branch_id,
+        forkFloorId: branchRecord.fork_floor_id,
+        active: branchRecord.active === 1,
+        createdAt: branchRecord.created_at
+      },
       activeFloorIds,
       reusedFloorIds,
       createdFloorIds,
