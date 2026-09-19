@@ -26,9 +26,10 @@ function memoryText(item: LongMemoryRecord): string {
   return `[记忆 ${item.startFloor}-${item.endFloor}]\n${title}${item.summary.trim()}`;
 }
 
-function promptText(memories: PackedMemory[]): string {
+export function renderLongMemory(memories: PackedMemory[]): string {
   if (!memories.length) return '';
-  return '[织忆·长期记忆]\n\n以下是较早发生过的剧情记忆，只读参考。\n与最近正文冲突时，以最近正文为准。\n\n' + memories.map(item => memoryText(item.memory)).join('\n\n');
+  const chronological = [...memories].sort((left, right) => left.memory.startFloor - right.memory.startFloor || left.memory.endFloor - right.memory.endFloor || left.memory.memoryId.localeCompare(right.memory.memoryId));
+  return '[织忆·长期记忆]\n\n以下是较早发生过的剧情记忆，只读参考。\n与最近正文冲突时，以最近正文为准。\n\n' + chronological.map(item => memoryText(item.memory)).join('\n\n');
 }
 
 /** Packs the explicit active fixed-recent set before the Phase 13 final-ranked recall set. */
@@ -51,14 +52,13 @@ export function packMemories(input: TokenPackInput, options: TokenPackOptions): 
   for (const item of ordered) {
     if (packed.length >= maxCount) { skippedByCount++; continue; }
     const candidate = { ...item, priority: item.source, estimatedTokens: estimateTokens(memoryText(item.memory)) } as PackedMemory;
-    if (estimateTokens(promptText([...packed, candidate])) > limit) { skippedByTokenBudget++; continue; }
+    if (estimateTokens(renderLongMemory([...packed, candidate])) > limit) { skippedByTokenBudget++; continue; }
     packed.push(candidate);
   }
-  const text = promptText(packed);
   const packedFixedRecentCount = packed.filter(item => item.priority === 'fixed_recent').length;
   const deduplicatedCount = ordered.length;
   return {
-    memories: packed, text, tokenLimit: limit, estimatedTokens: estimateTokens(text), currentStateTokens: estimateTokens(options.currentState ?? ''),
+    memories: packed, text: renderLongMemory(packed), tokenLimit: limit, estimatedTokens: estimateTokens(renderLongMemory(packed)), currentStateTokens: estimateTokens(options.currentState ?? ''),
     diagnostics: { recallCandidateCount: input.recallCandidates.length, fixedRecentCandidateCount: fixed.length, deduplicatedCount, packedCount: packed.length, packedFixedRecentCount, packedHighRelevanceCount: packed.length - packedFixedRecentCount, skippedByTokenBudget, skippedByCount, candidateCount: deduplicatedCount, fixedRecentCount: packedFixedRecentCount }
   };
 }

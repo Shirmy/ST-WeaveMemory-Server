@@ -7,6 +7,9 @@ import type { ChainPosition, StateChainEngine, TrustedPrefix } from '../state/ch
 import { renderCurrentState } from '../state/current-state';
 import { buildRecentContext } from '../state/recent-context';
 import { resolveExternalMappings } from '../state/external-mapping';
+import type { RecallService } from '../memory/recall';
+import type { LongMemoryStore } from '../storage/long-memory-store';
+import { packMemories } from '../memory/token-packer';
 
 const GENERATION_GATE_TIMEOUT_MS = 45_000;
 const GENERATION_GATE_POLL_MS = 150;
@@ -23,7 +26,9 @@ export class MemoryRuntime {
     private readonly store: MemoryStore,
     private readonly queue: PerChatQueue,
     private readonly stateTasks: StateTaskRunner | null = null,
-    private readonly chain: StateChainEngine | null = null
+    private readonly chain: StateChainEngine | null = null,
+    private readonly recall: RecallService | null = null,
+    private readonly longMemories: Pick<LongMemoryStore, 'list'> | null = null
   ) {}
 
   async finalizeFloor(input: FloorFinalizeRequest): Promise<FloorFinalizeResult> {
@@ -115,7 +120,23 @@ export class MemoryRuntime {
         const before = renderCurrentState(renderInput);
         const rendered = renderCurrentState({ ...renderInput, suppressedWeaveFields: resolution.suppressedWeaveFields });
         const external = input.externalState;
-        return { ready: true, longMemory: '', currentState: rendered.text, diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: rendered.tokens, stateNodeId: previous?.node?.stateNodeId, externalSource: external?.source ?? null, mvuDetected: external?.detected ?? false, sourceMessageIndex: external?.messageIndex ?? null, sourceSwipeId: external?.swipeId ?? null, mappingCount: resolution.mappingCount, activeEquivalentMappings: resolution.activeEquivalentMappings, activeRelatedMappings: resolution.activeRelatedMappings, suppressedWeaveFields: resolution.suppressedWeaveFields, mappingFailures: resolution.mappingFailures, tokensBeforeMapping: before.tokens, tokensAfterMapping: rendered.tokens } };
+        let longMemory = '';
+        let memoryDiagnostics = { memoryCount: 0, memoryTokens: 0, memoryTokenLimit: 0, recallCandidateCount: 0, fixedRecentCount: 0, packedFixedRecentCount: 0, packedHighRelevanceCount: 0, skippedByTokenBudget: 0, skippedByCount: 0 };
+        if (this.recall && this.longMemories) {
+          try {
+            const query = [input.latestUserText, ...recentItems.map(item => item.text)].filter(text => text.trim()).join('\n');
+            const recalled = await this.recall.recall(input.chatId, branchId, query);
+            const active = await this.longMemories.list(input.chatId, branchId);
+            const fixedRecent = active.sort((left, right) => right.endFloor - left.endFloor || right.startFloor - left.startFloor || left.memoryId.localeCompare(right.memoryId)).slice(0, 2);
+            const packed = packMemories({ recallCandidates: recalled.final, fixedRecentMemories: fixedRecent }, { contextWindow: input.contextSize, currentState: rendered.text });
+            longMemory = packed.text;
+            memoryDiagnostics = { memoryCount: packed.diagnostics.packedCount, memoryTokens: packed.estimatedTokens, memoryTokenLimit: packed.tokenLimit, recallCandidateCount: packed.diagnostics.recallCandidateCount, fixedRecentCount: packed.diagnostics.fixedRecentCandidateCount, packedFixedRecentCount: packed.diagnostics.packedFixedRecentCount, packedHighRelevanceCount: packed.diagnostics.packedHighRelevanceCount, skippedByTokenBudget: packed.diagnostics.skippedByTokenBudget, skippedByCount: packed.diagnostics.skippedByCount };
+          } catch (error) {
+            console.warn('[WeaveMemory] long-memory recall failed; blocking generation', error instanceof Error ? error.message : error);
+            return this.gateFailure('LONG_MEMORY_RECALL_FAILED', previous?.node?.stateNodeId ?? null);
+          }
+        }
+        return { ready: true, longMemory, currentState: rendered.text, diagnostics: { ...memoryDiagnostics, stateTokens: rendered.tokens, stateNodeId: previous?.node?.stateNodeId, externalSource: external?.source ?? null, mvuDetected: external?.detected ?? false, sourceMessageIndex: external?.messageIndex ?? null, sourceSwipeId: external?.swipeId ?? null, mappingCount: resolution.mappingCount, activeEquivalentMappings: resolution.activeEquivalentMappings, activeRelatedMappings: resolution.activeRelatedMappings, suppressedWeaveFields: resolution.suppressedWeaveFields, mappingFailures: resolution.mappingFailures, tokensBeforeMapping: before.tokens, tokensAfterMapping: rendered.tokens } };
       }
       const status = await this.positionStatus(previous, input.chatId);
       if (!resyncStarted && (status === 'failed' || status === 'missing' || status === 'stale')) {

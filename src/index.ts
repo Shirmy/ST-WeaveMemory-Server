@@ -81,7 +81,7 @@ export async function init(router: Router): Promise<void> {
   const embedding = new EmbeddingSearchService(longMemoryStore, aiConfig, client);
   const recall = new RecallService(bm25, embedding, aiConfig, client);
   longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator, getSummaryIntervalFloors: async () => (await aiConfig.getLongMemorySettings()).summaryIntervalFloors });
-  const activeRuntime = new MemoryRuntime(store, queue, runner, chain);
+  const activeRuntime = new MemoryRuntime(store, queue, runner, chain, recall, longMemoryStore);
   registerRoutes(router, activeRuntime, openedDatabase);
   registerAiRoutes(router, { aiConfig, client, stateTasks: runner });
   registerStateRoutes(router, { stateTasks: runner, chain, store });
