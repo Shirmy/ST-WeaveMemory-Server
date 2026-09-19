@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { AiRequestError, OpenAiCompatibleClient, type ChatCompletionInput } from '../src/ai/openai-compatible-client';
+import { AiRequestError, OpenAiCompatibleClient, parseRerankScores, type ChatCompletionInput } from '../src/ai/openai-compatible-client';
 import { draftChannel } from '../src/storage/ai-config-store';
 
 type Scripted = (req: http.IncomingMessage, body: string, res: http.ServerResponse) => void | Promise<void>;
@@ -164,6 +164,19 @@ async function main(): Promise<void> {
     const reranked = await client.rerank(channel, 'rerank', 'query', ['doc a', 'doc b'], 2000);
     assert.deepEqual(reranked.scores, [{ index: 0, relevanceScore: 0.9 }]);
     assert.deepEqual((await client.rerank(channel, 'rerank', 'query', [], 2000)).scores, []);
+    // All documented provider response shapes use the same parser for formal calls and probes.
+    const rerankPayloads: unknown[] = [
+      { results: [{ index: 0, relevance_score: 0.9 }] },
+      { data: { results: [{ index: 0, score: 0.8 }] } },
+      { data: [{ document_index: 0, relevance_score: 0.7 }] }
+    ];
+    for (const payload of rerankPayloads) {
+      assert.equal(parseRerankScores(payload, 1).length, 1);
+      const probeClient = new OpenAiCompatibleClient(async () => new Response(JSON.stringify(payload), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      assert.equal((await probeClient.rerank(channel, 'rerank', 'query', ['doc'], 2000)).scores.length, 1);
+      assert.equal((await probeClient.testModel(channel, 'rerank', 'rerank', 2000)).detail, 'results=1');
+    }
+    assert.deepEqual(parseRerankScores({ results: [{ index: 999, relevance_score: 'bad' }] }, 1), []);
     assert.equal(completions.length, 0);
     console.log('Phase 4 AI client acceptance passed');
   } finally {

@@ -104,7 +104,12 @@ export class RecallService {
   private async rerankStage(query: string, fused: FusedMemory[], settings: RecallSettings, errors: RecallStageError[]): Promise<RecallResult['rerank']> {
     const none = (status: RerankStatus, extra: Partial<RecallResult['rerank']> = {}): RecallResult['rerank'] => ({ status, documentCount: 0, model: null, candidates: [], ...extra });
     if (!settings.rerankEnabled) return none('disabled');
-    const binding = await this.aiConfig.resolveRole('rerank');
+    let binding: Awaited<ReturnType<RecallConfig['resolveRole']>>;
+    try {
+      binding = await this.aiConfig.resolveRole('rerank');
+    } catch (error) {
+      return this.rerankFailure(error, errors);
+    }
     if (!binding) return none('not_configured');
     if (!fused.length) return none('no_candidates', { model: binding.model });
     const pool = fused.slice(0, settings.rerankCandidateLimit);
@@ -123,6 +128,14 @@ export class RecallService {
       console.warn('[WeaveMemory] rerank failed; falling back to RRF order', message);
       return none('failed', { documentCount: pool.length, model: binding.model, error: message });
     }
+  }
+
+  private rerankFailure(error: unknown, errors: RecallStageError[]): RecallResult['rerank'] {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = error instanceof AiRequestError ? error.code : 'WM_INTERNAL_ERROR';
+    errors.push({ source: 'rerank', code, message });
+    console.warn('[WeaveMemory] rerank setup failed; falling back to RRF order', message);
+    return { status: 'failed', documentCount: 0, model: null, error: message, candidates: [] };
   }
 }
 

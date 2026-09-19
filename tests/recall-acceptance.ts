@@ -39,14 +39,17 @@ class FakeRerankClient {
   }
 }
 
-function build(options: { settings?: Partial<RecallSettings>; rerankBound?: boolean } = {}) {
+function build(options: { settings?: Partial<RecallSettings>; rerankBound?: boolean; resolveError?: Error } = {}) {
   const bm25 = new FakeSource();
   const embedding = new FakeSource();
   const client = new FakeRerankClient();
   const settings: RecallSettings = { ...DEFAULT_RECALL_SETTINGS, ...options.settings };
   const aiConfig = {
     getRecallSettings: async () => ({ ...settings }),
-    resolveRole: async (role: string) => (role === 'rerank' && options.rerankBound !== false ? { channel, model: 'rerank-v1' } : null)
+    resolveRole: async (role: string) => {
+      if (role === 'rerank' && options.resolveError) throw options.resolveError;
+      return role === 'rerank' && options.rerankBound !== false ? { channel, model: 'rerank-v1' } : null;
+    }
   };
   return { bm25, embedding, client, service: new RecallService(bm25, embedding, aiConfig as never, client) };
 }
@@ -122,6 +125,17 @@ async function main(): Promise<void> {
     assert.equal(result.rerank.error, 'simulated rerank outage');
     assert.deepEqual(ids(result.final), ['a', 'b']);
     assert.deepEqual(result.errors, [{ source: 'rerank', code: 'WM_AI_REQUEST_FAILED', message: 'simulated rerank outage' }]);
+  }
+
+  // 5b. Rerank binding/channel resolution fails: optional enhancement stays degraded to RRF.
+  {
+    const t = build({ settings: { rerankEnabled: true }, resolveError: new AiRequestError('WM_AI_CHANNEL_UNAVAILABLE', 'stored API key cannot be decrypted', false) });
+    t.bm25.results = ranked(['a', 'b', 'c']);
+    const result = await t.service.recall('chat', 'branch', 'q');
+    assert.equal(result.rerank.status, 'failed');
+    assert.deepEqual(ids(result.final), ids(result.rrf));
+    assert.deepEqual(result.errors, [{ source: 'rerank', code: 'WM_AI_CHANNEL_UNAVAILABLE', message: 'stored API key cannot be decrypted' }]);
+    assert.equal(t.client.requests.length, 0);
   }
 
   // 6. Reranker answers without usable scores: treated as failure, RRF order kept.

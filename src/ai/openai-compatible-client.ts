@@ -59,6 +59,23 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+/** Parses the response shapes used by common rerank providers. One parser is shared by
+ * the real request and the connectivity probe so they cannot drift apart. */
+export function parseRerankScores(data: unknown, documentCount: number): RerankScore[] {
+  const record = asRecord(data);
+  const nested = asRecord(record.data);
+  const rawResults: unknown[] = Array.isArray(record.results) ? record.results : Array.isArray(nested.results) ? nested.results : Array.isArray(record.data) ? record.data : [];
+  const scores: RerankScore[] = [];
+  for (const raw of rawResults) {
+    const item = asRecord(raw);
+    const index = Number(item.index ?? item.document_index ?? item.documentIndex);
+    const relevanceScore = Number(item.relevance_score ?? item.relevanceScore ?? item.score ?? item.rerank_score);
+    if (!Number.isInteger(index) || index < 0 || index >= documentCount || !Number.isFinite(relevanceScore)) continue;
+    scores.push({ index, relevanceScore });
+  }
+  return scores;
+}
+
 function numberOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -150,16 +167,7 @@ export class OpenAiCompatibleClient {
     if (!trimmed.length) return { scores: [], model: null, durationMs: 0 };
     const body = JSON.stringify({ model, query, documents: trimmed });
     const data = asRecord(await this.requestJson(channel, 'rerank', { method: 'POST', body }, timeoutMs, signal));
-    const nested = asRecord(data.data);
-    const rawResults: unknown[] = Array.isArray(data.results) ? data.results : Array.isArray(nested.results) ? nested.results : Array.isArray(data.data) ? data.data : [];
-    const scores: RerankScore[] = [];
-    for (const raw of rawResults) {
-      const item = asRecord(raw);
-      const index = Number(item.index ?? item.document_index ?? item.documentIndex);
-      const relevanceScore = Number(item.relevance_score ?? item.relevanceScore ?? item.score ?? item.rerank_score);
-      if (!Number.isInteger(index) || index < 0 || index >= trimmed.length || !Number.isFinite(relevanceScore)) continue;
-      scores.push({ index, relevanceScore });
-    }
+    const scores = parseRerankScores(data, trimmed.length);
     if (!scores.length) throw new AiRequestError('WM_INVALID_RESPONSE', 'rerank response contains no usable scores', false);
     return { scores, model: typeof data.model === 'string' ? data.model : null, durationMs: Date.now() - startedAt };
   }
@@ -176,17 +184,8 @@ export class OpenAiCompatibleClient {
       return { ok: true, role, model, detail: `dimensions=${first.embedding.length}`, durationMs: Date.now() - startedAt };
     }
     if (role === 'rerank') {
-      const body = JSON.stringify({
-        model,
-        query: 'story state memory',
-        documents: ['WeaveMemory keeps the current story state.', 'Unrelated text.'],
-        top_n: 1
-      });
-      const data = asRecord(await this.requestJson(channel, 'rerank', { method: 'POST', body }, timeoutMs, signal));
-      if (!Array.isArray(data.results) || data.results.length === 0) {
-        throw new AiRequestError('WM_INVALID_RESPONSE', 'rerank response contains no results', false);
-      }
-      return { ok: true, role, model, detail: `results=${data.results.length}`, durationMs: Date.now() - startedAt };
+      const result = await this.rerank(channel, model, 'story state memory', ['WeaveMemory keeps the current story state.', 'Unrelated text.'], timeoutMs, signal);
+      return { ok: true, role, model, detail: `results=${result.scores.length}`, durationMs: Date.now() - startedAt };
     }
     try {
       const completion = await this.chatCompletion(channel, {
