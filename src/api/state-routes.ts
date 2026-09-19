@@ -59,6 +59,24 @@ export function registerStateRoutes(router: Router, deps: StateRouteDependencies
     });
   }));
 
+  router.post('/state/manual-edit', json, wrapRoute(async req => {
+    const body = bodyObject(req);
+    const chatId = requiredString(body.chatId, 'chatId');
+    const branchId = optionalString(body.branchId, 'branchId') ?? await deps.store.getOrCreateActiveBranch(chatId);
+    const target = (body.target as any) || 'profile';
+    return deps.chain.applyManualEdit({
+      chatId,
+      branchId,
+      target,
+      entityId: optionalString(body.entityId, 'entityId'),
+      fieldPath: optionalString(body.fieldPath, 'fieldPath'),
+      value: body.value,
+      lockedPaths: Array.isArray(body.lockedPaths) ? body.lockedPaths as string[] : undefined,
+      action: body.action as any,
+      candidate: body.candidate as any
+    });
+  }));
+
   router.get('/state/current', wrapRoute(async req => {
     const query = queryObject(req);
     const chatId = requiredString(query.chatId, 'chatId');

@@ -262,6 +262,25 @@ export class StateChainStore {
     return result;
   }
 
+  async upsertCheckpoint(record: CheckpointRecord): Promise<void> {
+    await this.database.run(
+      `INSERT INTO checkpoints(checkpoint_id, chat_id, branch_id, state_node_id, snapshot_json, snapshot_fingerprint, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(checkpoint_id) DO UPDATE SET
+         snapshot_json = excluded.snapshot_json,
+         snapshot_fingerprint = excluded.snapshot_fingerprint`,
+      [record.checkpointId, record.chatId, record.branchId, record.stateNodeId, JSON.stringify(record.snapshot), record.snapshotFingerprint, record.createdAt]
+    );
+  }
+
+  async updateNodeCheckpoint(stateNodeId: string, checkpointId: string, stateFingerprint?: string): Promise<void> {
+    if (stateFingerprint) {
+      await this.database.run('UPDATE state_nodes SET checkpoint_id = ?, state_fingerprint = ? WHERE state_node_id = ?', [checkpointId, stateFingerprint, stateNodeId]);
+    } else {
+      await this.database.run('UPDATE state_nodes SET checkpoint_id = ? WHERE state_node_id = ?', [checkpointId, stateNodeId]);
+    }
+  }
+
   async insertCheckpoint(record: CheckpointRecord): Promise<void> {
     await this.database.run(
       `INSERT INTO checkpoints(checkpoint_id, chat_id, branch_id, state_node_id, snapshot_json, snapshot_fingerprint, created_at)

@@ -55,6 +55,18 @@ export function registerMemoryRoutes(router: Router, deps: MemoryRouteDependenci
     const body = bodyObject(req);
     return deps.embedding.rebuild(requiredString(body.chatId, 'chatId'), requiredString(body.branchId, 'branchId'));
   }));
+  router.post('/memory/toggle-active', json, wrapRoute(async req => {
+    const body = bodyObject(req);
+    const memoryId = requiredString(body.memoryId, 'memoryId');
+    const stale = Boolean(body.stale);
+    await deps.store.setMemoryStale(memoryId, stale);
+    if (stale) {
+      await deps.store.setBm25Indexed([memoryId], false);
+      await deps.store.setEmbeddingIndexed([memoryId], false);
+    }
+    return { memoryId, stale };
+  }));
+
   router.post('/recall/debug', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const options = body.options && typeof body.options === 'object' && !Array.isArray(body.options) ? recallOptions(body.options as Record<string, unknown>) : {};

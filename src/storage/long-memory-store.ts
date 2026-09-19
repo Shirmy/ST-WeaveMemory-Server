@@ -87,6 +87,11 @@ export class LongMemoryStore {
     await this.database.transaction(async () => { const target = await this.database.get<BatchRow>('SELECT * FROM long_memory_batches WHERE batch_id = ?', [batchId]); if (!target) throw new Error(`long memory batch ${batchId} does not exist`); await this.database.run('UPDATE long_memory_batches SET stale = 1, updated_at = ? WHERE chat_id = ? AND branch_id = ? AND batch_start_floor = ? AND batch_end_floor = ? AND batch_id != ?', [now, target.chat_id, target.branch_id, target.batch_start_floor, target.batch_end_floor, batchId]); await this.database.run('UPDATE long_memories SET stale = 1, updated_at = ? WHERE chat_id = ? AND branch_id = ? AND batch_start_floor = ? AND batch_end_floor = ? AND batch_id != ?', [now, target.chat_id, target.branch_id, target.batch_start_floor, target.batch_end_floor, batchId]); await this.database.run('UPDATE long_memory_batches SET stale = 0, updated_at = ? WHERE batch_id = ?', [now, batchId]); await this.database.run('UPDATE long_memories SET stale = 0, updated_at = ? WHERE batch_id = ?', [now, batchId]); });
   }
 
+  async setMemoryStale(memoryId: string, stale: boolean): Promise<void> {
+    const now = new Date().toISOString();
+    await this.database.run('UPDATE long_memories SET stale = ?, updated_at = ? WHERE memory_id = ?', [stale ? 1 : 0, now, memoryId]);
+  }
+
   async markAllBatchesStale(chatId: string, branchId: string): Promise<void> {
     const now = new Date().toISOString();
     await this.database.transaction(async () => { await this.database.run('UPDATE long_memory_batches SET stale = 1, updated_at = ? WHERE chat_id = ? AND branch_id = ? AND stale = 0', [now, chatId, branchId]); await this.database.run('UPDATE long_memories SET stale = 1, updated_at = ? WHERE chat_id = ? AND branch_id = ? AND stale = 0', [now, chatId, branchId]); });

@@ -345,12 +345,181 @@ export class StateChainEngine {
   async current(chatId: string, branchId: string): Promise<CurrentStateView> {
     const prefix = await this.trustedPrefix(chatId, branchId);
     const node = prefix.lineageHead;
-    if (!node) return { prefix, node: null, snapshot: emptySnapshot(branchId) };
+    if (!node) {
+      const head = await this.deps.chain.getBranchHead(branchId);
+      return { prefix, node: null, snapshot: head?.snapshot ?? emptySnapshot(branchId) };
+    }
     const replay = await this.snapshotAt(node);
     return { prefix, node, snapshot: replay.snapshot };
   }
 
   /** State after a specific floor variant, whether or not it is part of the current chain. */
+  async applyManualEdit(input: {
+    chatId: string;
+    branchId: string;
+    target: 'profile' | 'trace' | 'story' | 'candidate';
+    entityId?: string;
+    fieldPath?: string;
+    value?: unknown;
+    lockedPaths?: string[];
+    action?: 'lock' | 'unlock' | 'restore-ai';
+    candidate?: StateAnalysisCandidate;
+    now?: string;
+  }): Promise<{ snapshot: StateSnapshot; changed: boolean }> {
+    const { chain } = this.deps;
+    const now = input.now ?? new Date().toISOString();
+    const currentView = await this.current(input.chatId, input.branchId);
+    let snapshot = deepClone(currentView.snapshot);
+    let changed = false;
+
+    if (input.target === 'profile') {
+      if (!input.entityId) throw new StateChainError('WM_INVALID_REQUEST', 'entityId is required for profile edit');
+      let profile = snapshot.profiles[input.entityId];
+      if (!profile) {
+        profile = {
+          characterId: input.entityId,
+          canonicalName: input.entityId,
+          aliases: [],
+          basic: {},
+          appearance: {},
+          identity: {},
+          personality: {},
+          lifeDetails: [],
+          lockedPaths: [],
+          sourcePriority: {},
+          source: { branchId: input.branchId, sourceFloorIds: [], sourceHostChatIds: [], sourceType: 'manual' },
+          updatedAt: now
+        };
+        snapshot.profiles[input.entityId] = profile;
+        changed = true;
+      }
+
+      if (input.action === 'lock' && input.fieldPath) {
+        if (!profile.lockedPaths.includes(input.fieldPath)) {
+          profile.lockedPaths.push(input.fieldPath);
+          changed = true;
+        }
+      } else if (input.action === 'unlock' && input.fieldPath) {
+        if (profile.lockedPaths.includes(input.fieldPath)) {
+          profile.lockedPaths = profile.lockedPaths.filter(p => p !== input.fieldPath);
+          changed = true;
+        }
+      } else if (input.action === 'restore-ai' && input.fieldPath) {
+        if (profile.lockedPaths.includes(input.fieldPath)) {
+          profile.lockedPaths = profile.lockedPaths.filter(p => p !== input.fieldPath);
+          changed = true;
+        }
+        if (profile.sourcePriority[input.fieldPath]) {
+          delete profile.sourcePriority[input.fieldPath];
+          changed = true;
+        }
+      } else if (input.fieldPath && input.value !== undefined) {
+        const segments = input.fieldPath.split('.');
+        if (segments.length === 1) {
+          (profile as any)[segments[0]] = input.value;
+        } else if (segments.length === 2) {
+          const group = (profile as any)[segments[0]] ?? {};
+          group[segments[1]] = input.value;
+          (profile as any)[segments[0]] = group;
+        }
+        profile.sourcePriority[input.fieldPath] = 'manual';
+        profile.updatedAt = now;
+        changed = true;
+      }
+      if (Array.isArray(input.lockedPaths)) {
+        profile.lockedPaths = [...new Set(input.lockedPaths)];
+        changed = true;
+      }
+    } else if (input.target === 'trace') {
+      if (!input.entityId) throw new StateChainError('WM_INVALID_REQUEST', 'entityId is required for trace edit');
+      let trace = snapshot.traces[input.entityId];
+      if (!trace) {
+        trace = {
+          characterId: input.entityId,
+          longTermTendencies: [],
+          currentSituations: [],
+          visibility: [],
+          affinity: { inner: null, outer: null },
+          source: { branchId: input.branchId, sourceFloorIds: [], sourceHostChatIds: [], sourceType: 'manual' },
+          updatedAt: now
+        };
+        snapshot.traces[input.entityId] = trace;
+        changed = true;
+      }
+      if (input.fieldPath && input.value !== undefined) {
+        const segments = input.fieldPath.split('.');
+        if (segments.length === 1) {
+          (trace as any)[segments[0]] = input.value;
+        } else if (segments.length === 2) {
+          const group = (trace as any)[segments[0]] ?? {};
+          group[segments[1]] = input.value;
+          (trace as any)[segments[0]] = group;
+        }
+        trace.updatedAt = now;
+        changed = true;
+      }
+    } else if (input.target === 'story') {
+      if (input.fieldPath && input.value !== undefined) {
+        const segments = input.fieldPath.split('.');
+        if (segments.length === 1) {
+          (snapshot.story as any)[segments[0]] = input.value;
+        } else if (segments.length === 2) {
+          const group = (snapshot.story as any)[segments[0]] ?? {};
+          group[segments[1]] = input.value;
+          (snapshot.story as any)[segments[0]] = group;
+        }
+        if (snapshot.story.source) snapshot.story.source.sourceType = 'manual';
+        changed = true;
+      }
+    } else if (input.target === 'candidate' && input.candidate) {
+      const applied = applyCandidate(snapshot, input.candidate, {
+        branchId: input.branchId,
+        floorId: currentView.node?.floorId ?? 'manual-floor',
+        hostChatId: input.chatId,
+        now
+      });
+      snapshot = applied.snapshot;
+      changed = applied.changed;
+    }
+
+    if (changed) {
+      snapshot.updatedAt = now;
+      const stateFingerprint = snapshotFingerprint(snapshot);
+      if (currentView.node) {
+        const checkpointId = currentView.node.checkpointId ?? newCheckpointId();
+        await chain.upsertCheckpoint({
+          checkpointId,
+          chatId: input.chatId,
+          branchId: input.branchId,
+          stateNodeId: currentView.node.stateNodeId,
+          snapshot,
+          snapshotFingerprint: stateFingerprint,
+          createdAt: now
+        });
+        await chain.updateNodeCheckpoint(currentView.node.stateNodeId, checkpointId, stateFingerprint);
+        await chain.upsertBranchHead({
+          branchId: input.branchId,
+          chatId: input.chatId,
+          stateNodeId: currentView.node.stateNodeId,
+          snapshot,
+          snapshotFingerprint: stateFingerprint,
+          updatedAt: now
+        });
+      } else {
+        await chain.upsertBranchHead({
+          branchId: input.branchId,
+          chatId: input.chatId,
+          stateNodeId: 'manual-root',
+          snapshot,
+          snapshotFingerprint: stateFingerprint,
+          updatedAt: now
+        });
+      }
+    }
+
+    return { snapshot, changed };
+  }
+
   async snapshotAtFloor(chatId: string, branchId: string, messageIndex: number, swipeId: number | null): Promise<FloorStateView | null> {
     const floorIds = await this.deps.chain.findFloorIds(chatId, branchId, messageIndex, swipeId);
     if (!floorIds.length) return null;
