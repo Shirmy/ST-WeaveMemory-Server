@@ -338,25 +338,56 @@ UPDATE long_memories SET stale = 1 WHERE batch_start_floor = 0 OR batch_end_floo
   sql: `
 UPDATE long_memory_batches
 SET stale = 1
-WHERE stale = 0
-  AND batch_id NOT IN (
-    SELECT older.batch_id
-    FROM long_memory_batches older
-    WHERE older.stale = 0
-      AND EXISTS (
-        SELECT 1
-        FROM long_memory_batches newer
-        WHERE newer.stale = 0
-          AND newer.chat_id = older.chat_id
-          AND newer.branch_id = older.branch_id
-          AND newer.batch_start_floor = older.batch_start_floor
-          AND newer.batch_end_floor = older.batch_end_floor
-          AND (newer.updated_at > older.updated_at OR (newer.updated_at = older.updated_at AND newer.created_at > older.created_at))
+WHERE long_memory_batches.stale = 0
+  AND EXISTS (
+    SELECT 1
+    FROM long_memory_batches newer
+    WHERE newer.stale = 0
+      AND newer.chat_id = long_memory_batches.chat_id
+      AND newer.branch_id = long_memory_batches.branch_id
+      AND newer.batch_start_floor = long_memory_batches.batch_start_floor
+      AND newer.batch_end_floor = long_memory_batches.batch_end_floor
+      AND newer.batch_id != long_memory_batches.batch_id
+      AND (
+        newer.updated_at > long_memory_batches.updated_at
+        OR (newer.updated_at = long_memory_batches.updated_at AND newer.created_at > long_memory_batches.created_at)
+        OR (newer.updated_at = long_memory_batches.updated_at AND newer.created_at = long_memory_batches.created_at AND newer.rowid > long_memory_batches.rowid)
       )
   );
 UPDATE long_memories
 SET stale = 1
 WHERE batch_id IN (SELECT batch_id FROM long_memory_batches WHERE stale = 1);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_long_memory_active_batch_range
+  ON long_memory_batches(chat_id, branch_id, batch_start_floor, batch_end_floor)
+  WHERE stale = 0;
+`
+}, {
+  version: 10,
+  name: 'repair-active-long-memory-batch-survivor',
+  sql: `
+DROP INDEX IF EXISTS uq_long_memory_active_batch_range;
+UPDATE long_memory_batches SET stale = 1;
+UPDATE long_memory_batches
+SET stale = 0
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM long_memory_batches newer
+  WHERE newer.chat_id = long_memory_batches.chat_id
+    AND newer.branch_id = long_memory_batches.branch_id
+    AND newer.batch_start_floor = long_memory_batches.batch_start_floor
+    AND newer.batch_end_floor = long_memory_batches.batch_end_floor
+    AND newer.batch_id != long_memory_batches.batch_id
+    AND (
+      newer.updated_at > long_memory_batches.updated_at
+      OR (newer.updated_at = long_memory_batches.updated_at AND newer.created_at > long_memory_batches.created_at)
+      OR (newer.updated_at = long_memory_batches.updated_at AND newer.created_at = long_memory_batches.created_at AND newer.rowid > long_memory_batches.rowid)
+    )
+);
+UPDATE long_memories
+SET stale = CASE
+  WHEN batch_id IN (SELECT batch_id FROM long_memory_batches WHERE stale = 0) THEN 0
+  ELSE 1
+END;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_long_memory_active_batch_range
   ON long_memory_batches(chat_id, branch_id, batch_start_floor, batch_end_floor)
   WHERE stale = 0;
