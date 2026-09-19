@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { EmbeddingSearchService, cosineSimilarity, embeddingText } from '../src/memory/embedding';
+import { EmbeddingSearchService, cosineSimilarity, embeddingBindingFingerprint, embeddingText } from '../src/memory/embedding';
 import { AiRequestError } from '../src/ai/openai-compatible-client';
+import type { AiChannelRecord } from '../src/ai/types';
 import type { LongMemoryRecord } from '../src/memory/long-memory';
 import type { EmbeddingRef } from '../src/storage/long-memory-store';
 
@@ -29,21 +30,33 @@ class FakeStore {
 /** Deterministic fake embedding endpoint: the vector encodes which keywords appear in the text. */
 class FakeClient {
   calls: string[] = [];
+  channels: Array<{ baseUrl: string; apiKey: string | null }> = [];
   failing = new Set<string>();
   nonRetryable = new Set<string>();
   outage = false;
-  async createEmbedding(_channel: unknown, _model: string, input: string): Promise<{ vector: number[]; model: string | null; durationMs: number }> {
+  /** Vector dimensions per baseUrl; endpoints not listed here answer with 3 dimensions. */
+  dimensions = new Map<string, number>();
+  async createEmbedding(channel: { baseUrl: string; apiKey: string | null }, _model: string, input: string): Promise<{ vector: number[]; model: string | null; durationMs: number }> {
     this.calls.push(input);
+    this.channels.push({ baseUrl: channel.baseUrl, apiKey: channel.apiKey });
     if (this.outage) throw new AiRequestError('WM_AI_REQUEST_FAILED', 'simulated outage', true);
     for (const word of this.nonRetryable) if (input.includes(word)) throw new AiRequestError('WM_AI_CHANNEL_UNAVAILABLE', 'simulated auth failure', false);
     for (const word of this.failing) if (input.includes(word)) throw new Error('simulated item failure');
-    return { vector: ['gate', 'castle', 'dinner'].map(word => (input.includes(word) ? 1 : 0)), model: 'embed-v1', durationMs: 1 };
+    const vector = ['gate', 'castle', 'dinner', 'tower'].slice(0, this.dimensions.get(channel.baseUrl) ?? 3).map(word => (input.includes(word) ? 1 : 0));
+    return { vector, model: 'embed-v1', durationMs: 1 };
   }
   count(word: string): number { return this.calls.filter(input => input.includes(word)).length; }
 }
 
-function build(store: FakeStore, client: FakeClient, options: { model?: string; cooldownMs?: number; bound?: boolean } = {}): EmbeddingSearchService {
-  const binding = { channel: { channelId: 'embed-channel', timeout: 1 } as never, model: options.model ?? 'embed-v1' };
+type ChannelOverrides = Partial<Pick<AiChannelRecord, 'baseUrl' | 'apiKey' | 'headers' | 'apiType'>>;
+type BuildOptions = { model?: string; cooldownMs?: number; bound?: boolean; channel?: ChannelOverrides };
+
+function channel(overrides: ChannelOverrides = {}): AiChannelRecord {
+  return { channelId: 'embed-channel', name: 'Embedding', apiType: 'openai-compatible', baseUrl: 'https://provider-a.example/v1', hasApiKey: true, apiKey: 'key-1', timeout: 1, headers: {}, createdAt: '2026-01-01', updatedAt: '2026-01-01', ...overrides };
+}
+
+function build(store: FakeStore, client: FakeClient, options: BuildOptions = {}): EmbeddingSearchService {
+  const binding = { channel: channel(options.channel), model: options.model ?? 'embed-v1' };
   const config = { resolveRole: async () => (options.bound === false ? null : binding) };
   return new EmbeddingSearchService(store, config as never, client, { maxAttempts: 3, backoffMs: () => 0, failureCooldownMs: options.cooldownMs ?? 60_000 });
 }
@@ -171,6 +184,107 @@ async function main(): Promise<void> {
   const serial = build(serialStore, serialClient);
   await Promise.all([serial.sync('chat', 'branch'), serial.sync('chat', 'branch'), serial.search('chat', 'branch', 'gate')]);
   assert.equal(serialClient.count('ancient gate'), 1);
+
+  // 12. Binding fingerprint: stable across header order, trailing slash and API key; sensitive to apiType, baseUrl, headers and model.
+  const base = embeddingBindingFingerprint(channel(), 'embed-v1');
+  assert.equal(embeddingBindingFingerprint(channel({ baseUrl: 'https://provider-a.example/v1/' }), 'embed-v1'), base, 'trailing slash must not change the fingerprint');
+  assert.equal(embeddingBindingFingerprint(channel({ apiKey: 'rotated-key' }), 'embed-v1'), base, 'API key must not participate');
+  assert.equal(embeddingBindingFingerprint(channel({ apiKey: null }), 'embed-v1'), base);
+  assert.equal(embeddingBindingFingerprint(channel({ headers: { Authorization: 'Bearer x' } }), 'embed-v1'), base, 'credential headers are excluded');
+  assert.equal(embeddingBindingFingerprint(channel({ headers: { A: '1', B: '2' } }), 'embed-v1'), embeddingBindingFingerprint(channel({ headers: { b: '2', a: '1' } }), 'embed-v1'), 'header order and name case must not matter');
+  assert.notEqual(embeddingBindingFingerprint(channel({ headers: { 'X-Provider-Version': 'v1' } }), 'embed-v1'), base);
+  assert.notEqual(embeddingBindingFingerprint(channel({ baseUrl: 'https://provider-b.example/v1' }), 'embed-v1'), base);
+  assert.notEqual(embeddingBindingFingerprint(channel(), 'embed-v2'), base);
+  assert.ok(!base.includes('key-1'));
+
+  // 13. baseUrl change with the same channelId + model invalidates persisted vectors.
+  const urlStore = new FakeStore();
+  const urlClient = new FakeClient();
+  urlStore.records = [memory('url', 'ancient gate')];
+  assert.deepEqual((await build(urlStore, urlClient).search('chat', 'branch', 'gate')).map(item => item.memory.memoryId), ['url']);
+  assert.equal(urlClient.count('ancient gate'), 1);
+  const refBefore = urlStore.refs.get('url');
+  assert.ok(refBefore && refBefore.bindingFingerprint === base);
+  const movedService = build(urlStore, urlClient, { channel: { baseUrl: 'https://provider-b.example/v1' } });
+  assert.deepEqual((await movedService.search('chat', 'branch', 'gate')).map(item => item.memory.memoryId), ['url']);
+  assert.equal(urlClient.count('ancient gate'), 2, 'baseUrl change must re-embed the memory');
+  const refAfter = urlStore.refs.get('url');
+  assert.ok(refAfter && refAfter.bindingFingerprint !== refBefore.bindingFingerprint);
+  assert.equal(refAfter.provider, 'embed-channel');
+  assert.equal(refAfter.model, 'embed-v1');
+  assert.equal(urlClient.channels.at(-1)?.baseUrl, 'https://provider-b.example/v1');
+
+  // 14. headers change (same channelId, model and baseUrl) invalidates persisted vectors.
+  const headerStore = new FakeStore();
+  const headerClient = new FakeClient();
+  headerStore.records = [memory('hdr', 'ancient gate')];
+  await build(headerStore, headerClient, { channel: { headers: { 'X-Provider-Version': 'v1' } } }).sync('chat', 'branch');
+  assert.equal(headerClient.count('ancient gate'), 1);
+  await build(headerStore, headerClient, { channel: { headers: { 'x-provider-version': 'v1' } } }).sync('chat', 'branch');
+  assert.equal(headerClient.count('ancient gate'), 1, 'header name case must not trigger a rebuild');
+  await build(headerStore, headerClient, { channel: { headers: { 'X-Provider-Version': 'v2' } } }).sync('chat', 'branch');
+  assert.equal(headerClient.count('ancient gate'), 2, 'header value change must re-embed the memory');
+
+  // 15. API key rotation alone reuses vectors; queries use the new key.
+  const keyStore = new FakeStore();
+  const keyClient = new FakeClient();
+  keyStore.records = [memory('key', 'ancient gate')];
+  await build(keyStore, keyClient, { channel: { apiKey: 'key-1' } }).sync('chat', 'branch');
+  assert.equal(keyClient.count('ancient gate'), 1);
+  const rotated = build(keyStore, keyClient, { channel: { apiKey: 'key-2' } });
+  assert.deepEqual((await rotated.search('chat', 'branch', 'gate')).map(item => item.memory.memoryId), ['key']);
+  assert.equal(keyClient.count('ancient gate'), 1, 'API key rotation must not re-embed memories');
+  assert.equal(keyClient.channels.at(-1)?.apiKey, 'key-2');
+  assert.equal(keyStore.indexed.get('key'), true);
+
+  // 16. Restart with the same binding reuses persisted vectors; restart with a changed binding re-embeds.
+  const restartStore = new FakeStore();
+  const restartClient = new FakeClient();
+  restartStore.records = [memory('r1', 'ancient gate'), memory('r2', 'old castle')];
+  await build(restartStore, restartClient).sync('chat', 'branch');
+  assert.equal(restartClient.calls.length, 2);
+  const sameBinding = build(restartStore, restartClient);
+  assert.deepEqual((await sameBinding.search('chat', 'branch', 'castle')).map(item => item.memory.memoryId), ['r2']);
+  assert.equal(restartClient.calls.length, 3, 'only the query embedding is requested after a same-binding restart');
+  const changedBinding = build(restartStore, restartClient, { channel: { baseUrl: 'https://provider-b.example/v1' } });
+  assert.deepEqual((await changedBinding.search('chat', 'branch', 'castle')).map(item => item.memory.memoryId), ['r2']);
+  assert.equal(restartClient.calls.length, 6, 'a changed binding re-embeds both memories plus the query');
+  for (const id of ['r1', 'r2']) assert.equal(restartStore.refs.get(id)?.bindingFingerprint, embeddingBindingFingerprint(channel({ baseUrl: 'https://provider-b.example/v1' }), 'embed-v1'));
+
+  // 17. Dimension change: old 3-dimensional vectors are dropped during sync, not silently scored as 0.
+  const dimStore = new FakeStore();
+  const dimClient = new FakeClient();
+  dimClient.dimensions.set('https://provider-4d.example/v1', 4);
+  dimStore.records = [memory('dim', 'tall tower')];
+  await build(dimStore, dimClient).sync('chat', 'branch');
+  assert.equal(dimStore.refs.get('dim')?.vector.length, 3);
+  const fourDim = build(dimStore, dimClient, { channel: { baseUrl: 'https://provider-4d.example/v1' } });
+  assert.deepEqual(await fourDim.sync('chat', 'branch'), { indexed: 1, failed: 0, removed: 0 });
+  assert.equal(dimStore.refs.get('dim')?.vector.length, 4, 'the memory is re-embedded in the new vector space');
+  assert.deepEqual((await fourDim.search('chat', 'branch', 'tower')).map(item => item.memory.memoryId), ['dim']);
+  assert.equal(dimClient.count('tall tower'), 2);
+
+  // 18. Binding change resets embeddingIndexed for old-space memories before they are re-embedded.
+  const flagStore = new FakeStore();
+  const flagClient = new FakeClient();
+  flagStore.records = [memory('flag', 'ancient gate')];
+  const flagService = build(flagStore, flagClient);
+  await flagService.sync('chat', 'branch');
+  assert.equal(flagStore.indexed.get('flag'), true);
+  flagClient.failing.add('ancient gate');
+  const flagMoved = build(flagStore, flagClient, { channel: { baseUrl: 'https://provider-b.example/v1' } });
+  assert.deepEqual(await flagMoved.sync('chat', 'branch'), { indexed: 0, failed: 1, removed: 0 });
+  assert.equal(flagStore.indexed.get('flag'), false, 'an old-space vector must not report embeddingIndexed=true');
+  assert.ok(!flagStore.refs.has('flag'));
+
+  // 19. Legacy rows without a binding fingerprint (pre-migration-13 data) are re-embedded on first sync.
+  const legacyStore = new FakeStore();
+  const legacyClient = new FakeClient();
+  legacyStore.records = [memory('legacy', 'ancient gate')];
+  legacyStore.refs.set('legacy', { memoryId: 'legacy', provider: 'embed-channel', model: 'embed-v1', contentFingerprint: '', bindingFingerprint: '', vector: [1, 0, 0], updatedAt: '2026-01-01' });
+  await build(legacyStore, legacyClient).sync('chat', 'branch');
+  assert.equal(legacyClient.count('ancient gate'), 1);
+  assert.equal(legacyStore.refs.get('legacy')?.bindingFingerprint, base);
 
   console.log('Phase 12 embedding acceptance passed');
 }

@@ -16,7 +16,7 @@ SillyTavern 长期记忆、人物状态与剧情脉络管理插件的服务端�
 - Phase 9：近期上下文。支持原文模式和本地正则摘要模式，摘要逐楼提取失败时回退该楼正文，不调用额外 AI；近期楼数、模式和正则可在前端扩展设置中配置（`src/state/recent-context.ts`、前端 `src/ui/settings.ts`）。
 - Phase 10：长期记忆生成。长期记忆总结间隔由服务端持久化配置控制（默认 30 个 AI 楼），Scheduler 按 N 个 AI 楼形成 Batch，Batch 内由模型按事件生成多个 Slice；Batch 保存真实 FloorVariant 来源、人物、剧情线、时间、结束状态指纹和依赖指纹；正文 / swipe / 删除导致来源楼变化时整个 Batch 标记 stale，状态链稳定后自动补洞；相同依赖的历史 Batch 可在模型调用前直接复用并重新激活；提供 `/memory/list` 和 `/memory/resummarize`（`src/memory/`、`src/storage/long-memory-store.ts`）。
 - Phase 11：BM25 长期记忆召回。对当前 `chatId + branchId` 的 active 长期记忆建立独立本地索引；支持中文 unigram / bigram 和拉丁词元；title、summary、tags、人物、剧情线采用字段权重；stale 长期记忆自动移出索引；不同聊天与分支完全隔离；提供 `/memory/search`（`src/memory/bm25.ts`）。
-- Phase 12：Embedding 向量召回。向量模型使用已配置的 embedding 渠道与模型；向量保存于 SQLite 并按内容指纹增量同步；单条生成失败不会阻塞其它记忆；支持 stale 清理、索引重建和 `/memory/vector-search`（`src/memory/embedding.ts`）。
+- Phase 12：Embedding 向量召回。向量模型使用已配置的 embedding 渠道与模型；向量保存于 SQLite，同时绑定内容指纹与 Embedding 渠道 / 模型配置指纹（apiType、规范化 baseUrl、排序后的非凭证 headers、model；API Key 不参与），正文、模型或影响向量空间的渠道配置变化时自动重新生成，仅轮换 API Key 不会重建；单条生成失败不会阻塞其它记忆；支持 stale 清理、索引重建、`/memory/vector-search` 和 `/memory/vector-rebuild`（`src/memory/embedding.ts`）。
 
 尚未实现：Phase 13 及之后阶段；融合召回、重排和长期记忆注入仍未接入，`longMemory` 保持为空；「跟随 SillyTavern」渠道模式延后。
 

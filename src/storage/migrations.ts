@@ -408,6 +408,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_long_memory_active_batch_range
   sql: `
 ALTER TABLE embedding_refs ADD COLUMN content_fingerprint TEXT NOT NULL DEFAULT '';
 `
+}, {
+  version: 13,
+  name: 'embedding-binding-fingerprint',
+  sql: `
+ALTER TABLE embedding_refs ADD COLUMN binding_fingerprint TEXT NOT NULL DEFAULT '';
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

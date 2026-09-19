@@ -1,4 +1,5 @@
 import { fingerprint } from '../core/fingerprint';
+import { normalizeBaseUrl } from '../ai/base-url';
 import type { AiConfigStore } from '../storage/ai-config-store';
 import type { AiChannelRecord } from '../ai/types';
 import { AiRequestError, type OpenAiCompatibleClient } from '../ai/openai-compatible-client';
@@ -19,7 +20,7 @@ export type EmbeddingServiceOptions = {
 type Binding = { channel: AiChannelRecord; model: string };
 type Entry = { contentFingerprint: string; vector: number[] };
 type Failure = { contentFingerprint: string; retryAt: number };
-type Scope = { loaded: boolean; bindingKey: string | null; entries: Map<string, Entry>; failed: Map<string, Failure>; indexedIds: Set<string> };
+type Scope = { loaded: boolean; bindingFingerprint: string | null; entries: Map<string, Entry>; failed: Map<string, Failure>; indexedIds: Set<string> };
 type SyncOutcome = EmbeddingSyncResult & { records: LongMemoryRecord[] };
 
 type EmbeddingStore = Pick<LongMemoryStore, 'list' | 'listEmbeddingRefs' | 'saveEmbeddingRef' | 'deleteEmbeddingRefs' | 'setEmbeddingIndexed'>;
@@ -41,13 +42,32 @@ export function cosineSimilarity(left: number[], right: number[]): number {
 const sleep = (ms: number): Promise<void> => (ms > 0 ? new Promise(resolve => setTimeout(resolve, ms)) : Promise.resolve());
 const SEPARATOR = String.fromCharCode(0);
 const scopeKey = (chatId: string, branchId: string): string => `${chatId}${SEPARATOR}${branchId}`;
-const bindingKey = (binding: Binding): string => `${binding.channel.channelId}${SEPARATOR}${binding.model}`;
+
+/** Headers that only carry credentials: they never change the vector space and must not enter the fingerprint input. */
+const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'x-api-key', 'api-key', 'cookie']);
+
+/**
+ * Identifies the vector space a stored embedding belongs to: two vectors are comparable only when they were
+ * produced by the same protocol, endpoint, model and request-shaping headers. The API key is deliberately
+ * excluded (rotating credentials does not change the vector space, and the key must never be derivable
+ * from persisted data); header names are lower-cased and sorted so object order cannot cause churn.
+ */
+export function embeddingBindingFingerprint(channel: Pick<AiChannelRecord, 'apiType' | 'baseUrl' | 'headers'>, model: string): string {
+  let baseUrl: string;
+  try { baseUrl = normalizeBaseUrl(channel.baseUrl); }
+  catch { baseUrl = channel.baseUrl.trim().replace(/\/+$/, ''); }
+  const headers = Object.entries(channel.headers ?? {})
+    .map(([name, value]) => [name.trim().toLowerCase(), value] as const)
+    .filter(([name]) => name && !CREDENTIAL_HEADERS.has(name))
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return fingerprint(JSON.stringify({ apiType: channel.apiType, baseUrl, headers, model }));
+}
 
 /**
  * Embedding recall over the active long memories of one chat + branch.
  * Vectors are persisted in `embedding_refs` and cached in memory per scope; a memory is re-embedded only
- * when its vector text fingerprint or the bound channel / model changes. A single failing memory is skipped
- * (and retried after a cooldown) without blocking the rest of the scope.
+ * when its vector text fingerprint or the embedding binding fingerprint (protocol, endpoint, headers, model)
+ * changes. A single failing memory is skipped (and retried after a cooldown) without blocking the rest of the scope.
  */
 export class EmbeddingSearchService {
   private readonly scopes = new Map<string, Scope>();
@@ -65,7 +85,7 @@ export class EmbeddingSearchService {
   private scope(chatId: string, branchId: string): { key: string; scope: Scope } {
     const key = scopeKey(chatId, branchId);
     let scope = this.scopes.get(key);
-    if (!scope) { scope = { loaded: false, bindingKey: null, entries: new Map(), failed: new Map(), indexedIds: new Set() }; this.scopes.set(key, scope); }
+    if (!scope) { scope = { loaded: false, bindingFingerprint: null, entries: new Map(), failed: new Map(), indexedIds: new Set() }; this.scopes.set(key, scope); }
     return { key, scope };
   }
 
@@ -100,7 +120,7 @@ export class EmbeddingSearchService {
       await this.store.deleteEmbeddingRefs([...ids]);
       await this.store.setEmbeddingIndexed([...ids], false);
       target.scope.entries.clear(); target.scope.failed.clear(); target.scope.indexedIds.clear();
-      target.scope.loaded = true; target.scope.bindingKey = bindingKey(binding);
+      target.scope.loaded = true; target.scope.bindingFingerprint = embeddingBindingFingerprint(binding.channel, binding.model);
       return this.syncScope(chatId, branchId, target.scope, binding);
     }));
   }
@@ -114,16 +134,26 @@ export class EmbeddingSearchService {
   }
 
   private async syncScope(chatId: string, branchId: string, scope: Scope, binding: Binding): Promise<SyncOutcome> {
-    const key = bindingKey(binding);
-    if (scope.bindingKey !== key) { scope.entries.clear(); scope.failed.clear(); scope.loaded = false; scope.bindingKey = key; }
+    const bindingFingerprint = embeddingBindingFingerprint(binding.channel, binding.model);
+    if (scope.bindingFingerprint !== bindingFingerprint) {
+      // Channel / model configuration changed: nothing cached or persisted for the old vector space may be reused,
+      // and memories indexed for the old space must not report embeddingIndexed until re-embedded.
+      scope.entries.clear(); scope.failed.clear(); scope.loaded = false; scope.bindingFingerprint = bindingFingerprint;
+      if (scope.indexedIds.size) { await this.store.setEmbeddingIndexed([...scope.indexedIds], false); scope.indexedIds.clear(); }
+    }
     const records = await this.store.list(chatId, branchId);
     const activeIds = new Set(records.map(record => record.memoryId));
     const removedIds = new Set<string>();
     if (!scope.loaded) {
+      // Persisted vectors from another vector space are useless for this binding: drop them and clear their
+      // indexed flag so a restart never reports embeddingIndexed=true for a vector that cannot be used.
+      const invalidIds = new Set<string>();
       for (const ref of await this.store.listEmbeddingRefs(chatId, branchId)) {
-        if (ref.provider === binding.channel.channelId && ref.model === binding.model && ref.vector.length) scope.entries.set(ref.memoryId, { contentFingerprint: ref.contentFingerprint, vector: ref.vector });
-        else if (!activeIds.has(ref.memoryId)) removedIds.add(ref.memoryId);
+        if (!activeIds.has(ref.memoryId)) removedIds.add(ref.memoryId);
+        else if (ref.bindingFingerprint === bindingFingerprint && ref.vector.length) scope.entries.set(ref.memoryId, { contentFingerprint: ref.contentFingerprint, vector: ref.vector });
+        else invalidIds.add(ref.memoryId);
       }
+      if (invalidIds.size) { await this.store.deleteEmbeddingRefs([...invalidIds]); await this.store.setEmbeddingIndexed([...invalidIds], false); }
       scope.loaded = true;
     }
     for (const memoryId of [...scope.entries.keys(), ...scope.failed.keys(), ...scope.indexedIds]) if (!activeIds.has(memoryId)) removedIds.add(memoryId);
@@ -141,7 +171,7 @@ export class EmbeddingSearchService {
       if (failure && failure.contentFingerprint === contentFingerprint && failure.retryAt > now) { failedIds.push(record.memoryId); continue; }
       try {
         const vector = await this.embedWithRetry(binding, text);
-        const ref: EmbeddingRef = { memoryId: record.memoryId, provider: binding.channel.channelId, model: binding.model, contentFingerprint, vector, updatedAt: new Date().toISOString() };
+        const ref: EmbeddingRef = { memoryId: record.memoryId, provider: binding.channel.channelId, model: binding.model, contentFingerprint, bindingFingerprint, vector, updatedAt: new Date().toISOString() };
         await this.store.saveEmbeddingRef(ref);
         scope.entries.set(record.memoryId, { contentFingerprint, vector }); scope.failed.delete(record.memoryId); indexedIds.push(record.memoryId);
       } catch (error) {

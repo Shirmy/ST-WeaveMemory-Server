@@ -62,7 +62,7 @@ async function main(): Promise<void> {
     assert.equal(activeSlicesAfterSafetyRepair?.count, 0, 'migration 11 must leave every slice stale');
 
     const version = await database.get<{ user_version: number }>('PRAGMA user_version');
-    assert.equal(version?.user_version, 12);
+    assert.equal(version?.user_version, 13);
     await database.close();
     console.log('long memory migration acceptance passed');
   } finally {
