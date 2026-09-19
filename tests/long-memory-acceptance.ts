@@ -17,10 +17,10 @@ const generator = new LongMemoryGenerator({
   client: { chatCompletion: async () => { calls += 1; return { text: JSON.stringify({ slices: [{ startFloor: 1, endFloor: 30, summary: '已发生', tags: [], characterIds: [], plotlineIds: [] }] }) }; } } as never,
   store: {
     findByDependency: async (_chatId: string, _branchId: string, dependency: string) => saved.filter(item => item.batchDependencyFingerprint === dependency),
-    reactivateBatch: async () => { saved = saved.map(item => ({ ...item, stale: false })); },
+    activateBatch: async (batchId: string) => { const target = saved.find(item => item.batchId === batchId); saved = saved.map(item => item.batchStartFloor === target?.batchStartFloor && item.batchEndFloor === target?.batchEndFloor ? { ...item, stale: item.batchId !== batchId } : item); },
     listByBatch: async (batchId: string) => saved.filter(item => item.batchId === batchId),
     markStaleByFloorIds: async () => 0,
-    insertBatch: async (records: LongMemoryRecord[]) => { saved = records; }
+    insertBatch: async (records: LongMemoryRecord[]) => { saved = saved.map(item => item.batchStartFloor === records[0]?.batchStartFloor && item.batchEndFloor === records[0]?.batchEndFloor ? { ...item, stale: true } : item); saved.push(...records); }
   } as never
 });
 await generator.generate(input);
@@ -29,6 +29,14 @@ saved = saved.map(item => ({ ...item, stale: true }));
 const reused = await generator.generate(input);
 assert.equal(calls, 1, 'same dependency must be reused before summary model call');
 assert.equal(reused[0]?.stale, false, 'stale historical batch is reactivated');
+const inputB = { ...input, endStateDigest: { stateNodeId: 'node-30-b', stateFingerprint: 'sha256:b' } };
+await generator.generate(inputB);
+assert.equal(calls, 2);
+await generator.generate(input);
+assert.equal(calls, 2, 'A to B to A must reuse historical A');
+const active = saved.filter(item => !item.stale);
+assert.equal(new Set(active.map(item => item.batchId)).size, 1, 'only one batch version may be active for a range');
+assert.equal(active[0]?.batchDependencyFingerprint, saved[0]?.batchDependencyFingerprint);
 console.log('long memory acceptance passed');
 }
 void main().catch(error => { console.error(error); process.exitCode = 1; });

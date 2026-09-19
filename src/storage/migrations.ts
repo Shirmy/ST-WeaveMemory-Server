@@ -332,6 +332,26 @@ ALTER TABLE long_memories ADD COLUMN batch_start_floor INTEGER NOT NULL DEFAULT 
 ALTER TABLE long_memories ADD COLUMN batch_end_floor INTEGER NOT NULL DEFAULT 0;
 UPDATE long_memories SET stale = 1 WHERE batch_start_floor = 0 OR batch_end_floor = 0;
 `
+}, {
+  version: 9,
+  name: 'unique-active-long-memory-batch-range',
+  sql: `
+UPDATE long_memory_batches
+SET stale = 1
+WHERE stale = 0
+  AND batch_id NOT IN (
+    SELECT MAX(batch_id)
+    FROM long_memory_batches
+    WHERE stale = 0
+    GROUP BY chat_id, branch_id, batch_start_floor, batch_end_floor
+  );
+UPDATE long_memories
+SET stale = 1
+WHERE batch_id IN (SELECT batch_id FROM long_memory_batches WHERE stale = 1);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_long_memory_active_batch_range
+  ON long_memory_batches(chat_id, branch_id, batch_start_floor, batch_end_floor)
+  WHERE stale = 0;
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

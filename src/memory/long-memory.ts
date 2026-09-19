@@ -119,7 +119,7 @@ export class LongMemoryGenerator {
     const dependency = buildLongMemoryDependency(input, prompt.preset.content);
     const reusable = await this.deps.store.findByDependency(input.chatId, input.branchId, dependency, { includeStale: true });
     if (reusable.length) {
-      await this.deps.store.reactivateBatch(reusable[0].batchId);
+      await this.deps.store.activateBatch(reusable[0].batchId);
       return this.deps.store.listByBatch(reusable[0].batchId);
     }
     const completion = await this.deps.client.chatCompletion(channel, { model: binding.model, messages: renderLongMemoryMessages(input, prompt.preset.content), temperature: 0.2, maxTokens: 4096, timeoutMs: (channel.timeout ?? 120) * 1000 });
