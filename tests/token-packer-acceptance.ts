@@ -19,4 +19,8 @@ assert.ok(packed.estimatedTokens <= packed.tokenLimit);
 const budget = packMemories([memory('huge', 1, 1, '字'.repeat(1000)), ...candidates], { contextWindow: 100_000, tokenLimit: 30, fixedRecentCount: 0 });
 assert.ok(budget.estimatedTokens <= 30);
 assert.ok(budget.diagnostics.skippedByTokenBudget > 0);
+const separateState = packMemories(candidates, { contextWindow: 1, currentState: '当前状态'.repeat(1000) });
+assert.equal(separateState.tokenLimit, 2000);
+assert.equal(separateState.currentStateTokens, 1000);
+assert.ok(separateState.estimatedTokens <= separateState.tokenLimit);
 console.log('token packer acceptance passed');

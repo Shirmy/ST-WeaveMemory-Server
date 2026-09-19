@@ -1,4 +1,5 @@
 import type { FusedMemory } from './recall';
+import { estimateTokens as estimateTextTokens } from '../state/current-state';
 
 export const TOKEN_PACKER_DEFAULTS = { maxMemoryCount: 6, fixedRecentCount: 2, minimumTokens: 2000, maximumTokens: 6000, contextRatio: 0.03 } as const;
 
@@ -14,7 +15,7 @@ export type TokenPackResult = {
 };
 
 /** Conservative dependency-free estimate; the rendered prompt itself is counted by packMemories. */
-export function estimateTokens(text: string): number { return Math.ceil(Array.from(text).length / 4); }
+export function estimateTokens(text: string): number { return estimateTextTokens(text); }
 
 export function tokenLimit(contextWindow: number, override?: number): number {
   if (override !== undefined && Number.isSafeInteger(override) && override >= 0) return override;
