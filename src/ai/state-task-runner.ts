@@ -272,6 +272,13 @@ export class StateTaskRunner {
     }
     const first = prefix.positions.find(position => position.messageIndex === prefix.firstInvalidIndex);
     if (!first) return plan;
+    await this.deps.onFloorsStale?.({
+      chatId,
+      branchId,
+      floorIds: prefix.positions
+        .filter(position => position.messageIndex >= first.messageIndex)
+        .map(position => position.floorId)
+    });
     const activeJobs = await tasks.listActiveJobs(chatId, branchId);
     const headFingerprint = prefix.head?.stateFingerprint ?? null;
     // Pending downstream jobs compute their dependency when they start, so only running ones hold a stale previous state.
@@ -335,6 +342,13 @@ export class StateTaskRunner {
       if (prefix.firstInvalidIndex !== null && prefix.firstInvalidIndex < from) {
         throw new StateTaskError('WM_INVALID_REQUEST', `the chain is already invalid from floor ${prefix.firstInvalidIndex}; rebuild from there first`);
       }
+      await this.deps.onFloorsStale?.({
+        chatId: input.chatId,
+        branchId,
+        floorIds: prefix.positions
+          .filter(position => position.messageIndex >= from)
+          .map(position => position.floorId)
+      });
       const activeJobs = await tasks.listActiveJobs(input.chatId, branchId);
       const cancelled = await this.cancelJobs(activeJobs.filter(job => job.messageIndex >= from), 'forced rebuild from an earlier floor');
       const floor = await store.getFloor(target.floorId);
