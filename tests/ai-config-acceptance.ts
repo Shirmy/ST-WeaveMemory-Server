@@ -18,10 +18,11 @@ async function expectConfigError(work: () => Promise<unknown>, code = 'WM_INVALI
 async function main(): Promise<void> {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'weavememory-ai-config-'));
   dataRootGlobal.DATA_ROOT = dataRoot;
+  let database: SqliteDatabase | undefined;
   try {
     const paths = resolveStoragePaths();
     await ensureStorageDirectories(paths);
-    let database = await SqliteDatabase.open(paths.databasePath);
+    database = await SqliteDatabase.open(paths.databasePath);
     await runMigrations(database, paths);
     let secrets = await SecretBox.load(paths.secretKeyPath);
     let store = new AiConfigStore(database, secrets);
@@ -122,15 +123,15 @@ async function main(): Promise<void> {
     store = new AiConfigStore(database, secrets);
     assert.deepEqual(await store.getStateTaskSettings(), { timeoutSec: 60, maxAttempts: 3, checkpointInterval: 20 });
 
-    assert.deepEqual(await store.saveLongMemorySettings({ summaryIntervalFloors: 20 }), { summaryIntervalFloors: 20 });
-    assert.deepEqual(await store.getLongMemorySettings(), { summaryIntervalFloors: 20 });
+    assert.deepEqual(await store.saveLongMemorySettings({ summaryIntervalFloors: 20 }), { summaryIntervalFloors: 20, latestForcedCount: 2 });
+    assert.deepEqual(await store.getLongMemorySettings(), { summaryIntervalFloors: 20, latestForcedCount: 2 });
     // recall settings: roadmap §62 defaults, partial patches, validation, persistence
-    assert.deepEqual(await store.getRecallSettings(), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: false, rerankCandidateLimit: 20, finalRecallCount: 6 });
-    assert.deepEqual(await store.saveRecallSettings({ rerankEnabled: true, rerankCandidateLimit: 30 }), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: true, rerankCandidateLimit: 30, finalRecallCount: 6 });
+    assert.deepEqual(await store.getRecallSettings(), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: false, rerankCandidateLimit: 20, finalRecallCount: 6, tokenRatio: 0.03, minTokenBudget: 2000, maxTokenBudget: 6000 });
+    assert.deepEqual(await store.saveRecallSettings({ rerankEnabled: true, rerankCandidateLimit: 30 }), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: true, rerankCandidateLimit: 30, finalRecallCount: 6, tokenRatio: 0.03, minTokenBudget: 2000, maxTokenBudget: 6000 });
     await expectConfigError(() => store.saveRecallSettings({ rrfK: 0 }));
     await expectConfigError(() => store.saveRecallSettings({ finalRecallCount: 51 }));
     await expectConfigError(() => store.saveRecallSettings({ rerankEnabled: 'yes' as never }));
-    assert.deepEqual(await store.getRecallSettings(), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: true, rerankCandidateLimit: 30, finalRecallCount: 6 });
+    assert.deepEqual(await store.getRecallSettings(), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: true, rerankCandidateLimit: 30, finalRecallCount: 6, tokenRatio: 0.03, minTokenBudget: 2000, maxTokenBudget: 6000 });
     // schema reached v13 and long-memory source/dependency columns are present
     const version = await database.get<{ user_version: number }>('PRAGMA user_version');
     assert.equal(version?.user_version, 13);
@@ -139,8 +140,10 @@ async function main(): Promise<void> {
       assert.ok(jobColumns.some(item => item.name === column), `jobs.${column} missing`);
     }
     await database.close();
+    database = undefined;
     console.log('Phase 4 AI config acceptance passed');
   } finally {
+    if (database) await database.close();
     delete dataRootGlobal.DATA_ROOT;
     try {
       await fs.rm(dataRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

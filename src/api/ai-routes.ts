@@ -6,12 +6,14 @@ import { LONG_MEMORY_SETTING_LIMITS, RECALL_SETTING_LIMITS, STATE_TASK_SETTING_L
 import type { KnownCharacter } from '../state/schema';
 import { AiConfigStore, draftChannel, isAiRole, validatePromptContent } from '../storage/ai-config-store';
 import { ApiError } from './errors';
+import type { LongMemoryGenerator } from '../memory/long-memory';
 import { bodyObject, optionalInteger, optionalString, requiredString, wrapRoute } from './request-utils';
 
 export type AiRouteDependencies = {
   aiConfig: AiConfigStore;
   client: OpenAiCompatibleClient;
   stateTasks: StateTaskRunner;
+  summaryGenerator?: LongMemoryGenerator;
 };
 
 /** Timeout used for model lists and connectivity probes when the channel has no explicit timeout. */
@@ -163,14 +165,15 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
   router.post('/ai/prompts/test', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const promptType = body.promptType ?? 'state';
-    if (promptType !== 'state') throw new ApiError(400, 'WM_INVALID_REQUEST', 'only the state prompt can be tested in this phase');
+    if (promptType === 'summary' && deps.summaryGenerator) return deps.summaryGenerator.test(requiredString(body.sampleContent, 'sampleContent'), body.content === undefined ? undefined : validatePromptContent(body.content), optionalString(body.presetId, 'presetId'));
+    if (promptType !== 'state') throw new ApiError(400, 'WM_INVALID_REQUEST', 'unsupported prompt type');
     const result = await stateTasks.runAdHoc({
       sampleContent: requiredString(body.sampleContent, 'sampleContent'),
       content: body.content === undefined ? undefined : validatePromptContent(body.content),
       presetId: optionalString(body.presetId, 'presetId'),
       knownCharacters: knownCharactersFrom(body.knownCharacters)
     });
-    return { ok: true, ...result };
+    return { ok: true, result: result.candidate, durationMs: result.durationMs, promptVersion: result.promptVersion, channelId: result.channelId, model: result.model };
   }));
 
   // ---------------------------------------------------------------- task settings
@@ -200,8 +203,9 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
       if (checkpointInterval < min || checkpointInterval > max) throw new ApiError(400, 'WM_INVALID_REQUEST', `state.checkpointInterval must be between ${min} and ${max}`);
       patch.checkpointInterval = checkpointInterval;
     }
-    const longMemoryPatch: { summaryIntervalFloors?: number } = {};
+    const longMemoryPatch: { summaryIntervalFloors?: number; latestForcedCount?: number } = {};
     if (longMemory.summaryIntervalFloors !== undefined) longMemoryPatch.summaryIntervalFloors = optionalInteger(longMemory.summaryIntervalFloors, 'longMemory.summaryIntervalFloors');
+    if (longMemory.latestForcedCount !== undefined) longMemoryPatch.latestForcedCount = optionalInteger(longMemory.latestForcedCount, 'longMemory.latestForcedCount');
     const recall = body.recall && typeof body.recall === 'object' ? (body.recall as Record<string, unknown>) : {};
     const recallPatch: Partial<RecallSettings> = {};
     for (const field of ['bm25TopK', 'embeddingTopK', 'rrfK', 'rerankCandidateLimit', 'finalRecallCount'] as const) {
@@ -215,6 +219,14 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
       if (typeof recall.rerankEnabled !== 'boolean') throw new ApiError(400, 'WM_INVALID_REQUEST', 'recall.rerankEnabled must be a boolean');
       recallPatch.rerankEnabled = recall.rerankEnabled;
     }
-    return { state: await aiConfig.saveStateTaskSettings(patch), longMemory: await aiConfig.saveLongMemorySettings(longMemoryPatch), recall: await aiConfig.saveRecallSettings(recallPatch) };
+    for (const field of ['tokenRatio', 'minTokenBudget', 'maxTokenBudget'] as const) {
+      const value = recall[field];
+      if (value === undefined) continue;
+      if (typeof value !== 'number' || !Number.isFinite(value)) throw new ApiError(400, 'WM_INVALID_REQUEST', `recall.${field} must be a number`);
+      const { min, max } = RECALL_SETTING_LIMITS[field];
+      if (value < min || value > max) throw new ApiError(400, 'WM_INVALID_REQUEST', `recall.${field} must be between ${min} and ${max}`);
+      recallPatch[field] = value;
+    }
+    return aiConfig.saveSettings(patch, longMemoryPatch, recallPatch);
   }));
 }

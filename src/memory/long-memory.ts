@@ -5,6 +5,8 @@ import type { OpenAiCompatibleClient } from '../ai/openai-compatible-client';
 import type { ChatMessage } from '../ai/prompts/state-prompt';
 import type { PromptContent } from '../ai/types';
 import { fingerprint } from '../core/fingerprint';
+import { computePromptVersion } from '../ai/prompts/state-prompt';
+import { recordDiagnostics } from '../core/diagnostics';
 
 export type LongMemoryBatchInput = {
   chatId: string;
@@ -71,7 +73,7 @@ export const DEFAULT_LONG_MEMORY_PROMPT: PromptContent = {
 export function renderLongMemoryMessages(input: LongMemoryBatchInput, content: PromptContent): ChatMessage[] {
   const payload = { batchStartFloor: input.batchStartFloor, batchEndFloor: input.batchEndFloor, floors: input.floors, stateDeltas: input.stateDeltas, endStateDigest: input.endStateDigest };
   return [
-    { role: 'system', content: content.system.trim() },
+    { role: 'system', content: `${content.system.trim()}\n输出契约（不可覆盖）：${DEFAULT_LONG_MEMORY_PROMPT.task}` },
     { role: 'user', content: `${content.task.trim()}\n\n[LongMemoryBatchInput]\n${JSON.stringify(payload)}` }
   ];
 }
@@ -91,7 +93,7 @@ export function parseLongMemoryOutput(raw: string, input: LongMemoryBatchInput):
   return { slices };
 }
 
-export type LongMemoryGeneratorDeps = { aiConfig: AiConfigStore; client: OpenAiCompatibleClient; store: LongMemoryStore };
+export type LongMemoryGeneratorDeps = { aiConfig: AiConfigStore; client: OpenAiCompatibleClient; store: LongMemoryStore; currentInput?: (input: LongMemoryBatchInput) => Promise<LongMemoryBatchInput> };
 
 export function buildLongMemoryDependency(input: LongMemoryBatchInput, prompt: PromptContent): string {
   return fingerprint(JSON.stringify({
@@ -108,26 +110,42 @@ export function buildLongMemoryDependency(input: LongMemoryBatchInput, prompt: P
 export class LongMemoryGenerator {
   constructor(private readonly deps: LongMemoryGeneratorDeps) {}
 
-  async generate(input: LongMemoryBatchInput): Promise<LongMemoryRecord[]> {
+  async test(sampleContent: string, content?: PromptContent, presetId?: string) {
+    const startedAt = Date.now();
+    const active = await this.deps.aiConfig.getActivePrompt('summary');
+    const preset = presetId ? await this.deps.aiConfig.getPreset(presetId) : active.preset;
+    if (!preset || preset.promptType !== 'summary') throw new Error('summary preset does not exist');
+    const prompt = content ?? preset.content;
+    const binding = await this.deps.aiConfig.resolveRole('summary');
+    if (!binding) throw new Error('summary model is not configured');
+    const input: LongMemoryBatchInput = { chatId: 'prompt-test', branchId: 'prompt-test', batchStartFloor: 1, batchEndFloor: 1, floors: [{ floorId: 'sample', content: sampleContent }], stateDeltas: [], endStateDigest: { stateNodeId: 'sample', stateFingerprint: '' } };
+    const completion = await this.deps.client.chatCompletion(binding.channel, { model: binding.model, messages: renderLongMemoryMessages(input, prompt), temperature: 0.2, maxTokens: 4096, timeoutMs: (binding.channel.timeout ?? 120) * 1000 });
+    return { ok: true, result: parseLongMemoryOutput(completion.text, input), durationMs: Date.now() - startedAt, promptVersion: computePromptVersion('summary', prompt), model: binding.model, channelId: binding.channel.channelId };
+  }
+
+  async generate(input: LongMemoryBatchInput, force = false): Promise<LongMemoryRecord[]> {
+    const startedAt = performance.now();
     const binding = (await this.deps.aiConfig.getBindings()).summary;
     if (!binding) throw new Error('summary model is not configured');
     const channel = await this.deps.aiConfig.getChannel(binding.channelId);
     if (!channel) throw new Error('summary channel is not configured');
-    let prompt: { preset: { content: PromptContent } };
-    try { prompt = await this.deps.aiConfig.getActivePrompt('summary'); }
-    catch { prompt = { preset: { content: DEFAULT_LONG_MEMORY_PROMPT } }; }
+    const prompt = await this.deps.aiConfig.getActivePrompt('summary');
     const dependency = buildLongMemoryDependency(input, prompt.preset.content);
+    if (this.deps.currentInput && buildLongMemoryDependency(await this.deps.currentInput(input), prompt.preset.content) !== dependency) throw new Error('summary sources are not current; request rejected');
     const reusable = await this.deps.store.findByDependency(input.chatId, input.branchId, dependency, { includeStale: true });
-    if (reusable.length) {
+    if (reusable.length && !force) {
       await this.deps.store.activateBatch(reusable[0].batchId);
       return this.deps.store.listByBatch(reusable[0].batchId);
     }
     const completion = await this.deps.client.chatCompletion(channel, { model: binding.model, messages: renderLongMemoryMessages(input, prompt.preset.content), temperature: 0.2, maxTokens: 4096, timeoutMs: (channel.timeout ?? 120) * 1000 });
     const output = parseLongMemoryOutput(completion.text, input);
+    if ((await this.deps.aiConfig.getActivePrompt('summary')).promptVersion !== prompt.promptVersion) throw new Error('summary prompt changed during generation; result discarded');
+    if (this.deps.currentInput && buildLongMemoryDependency(await this.deps.currentInput(input), prompt.preset.content) !== dependency) throw new Error('summary sources changed during generation; result discarded');
     const batchId = `batch_${randomUUID()}`; const now = new Date().toISOString();
     const records = output.slices.map((slice, index) => ({ ...slice, memoryId: `memory_${randomUUID()}`, chatId: input.chatId, branchId: input.branchId, batchId, sliceId: `${batchId}:slice:${index + 1}`, batchStartFloor: input.batchStartFloor, batchEndFloor: input.batchEndFloor, sourceFloorIds: input.floors.slice(slice.startFloor - input.batchStartFloor, slice.endFloor - input.batchStartFloor + 1).map(floor => floor.floorId), batchDependencyFingerprint: dependency, endStateNodeId: input.endStateDigest.stateNodeId, endStateFingerprint: input.endStateDigest.stateFingerprint, bm25Indexed: false, embeddingIndexed: false, stale: false, createdAt: now, updatedAt: now }));
     await this.deps.store.markStaleByFloorIds(input.chatId, input.branchId, input.floors.map(floor => floor.floorId));
     await this.deps.store.insertBatch(records, { batchId, chatId: input.chatId, branchId: input.branchId, batchStartFloor: input.batchStartFloor, batchEndFloor: input.batchEndFloor, sourceFloorIds: input.floors.map(floor => floor.floorId), batchDependencyFingerprint: dependency, endStateNodeId: input.endStateDigest.stateNodeId, endStateFingerprint: input.endStateDigest.stateFingerprint, stale: false, createdAt: now, updatedAt: now });
+    recordDiagnostics(input.chatId, input.branchId, { summary: { at: now, durationMs: performance.now() - startedAt, promptVersion: prompt.promptVersion, model: binding.model, channelId: channel.channelId } });
     return records;
   }
 }

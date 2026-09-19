@@ -6,7 +6,7 @@ import type { SqliteDatabase } from '../storage/sqlite-database';
 import type { FloorRecord, MemoryStore } from '../storage/types';
 import { applyCandidate, emptySnapshot, snapshotFingerprint } from './apply';
 import { applyChangesInPlace, deepClone, diffValues, partitionChanges } from './diff';
-import { STATE_SCHEMA_VERSION, type StateAnalysisCandidate, type StateSnapshot } from './schema';
+import { STATE_SCHEMA_VERSION, validateStateAnalysisResponse, validateStateSnapshot, type StateAnalysisCandidate, type StateSnapshot } from './schema';
 
 export class StateChainError extends Error {
   constructor(readonly code: string, message: string) {
@@ -366,9 +366,40 @@ export class StateChainEngine {
     candidate?: StateAnalysisCandidate;
     now?: string;
   }): Promise<{ snapshot: StateSnapshot; changed: boolean }> {
+    return this.deps.database.transaction(async () => {
     const { chain } = this.deps;
-    const now = input.now ?? new Date().toISOString();
-    const currentView = await this.current(input.chatId, input.branchId);
+    const prefix = await this.trustedPrefix(input.chatId, input.branchId);
+    if (!prefix.head) throw new StateChainError('WM_MANUAL_EDIT_REQUIRES_STATE', 'current branch has no valid state node; generate the first state before editing manually');
+    const currentView = { node: prefix.head, snapshot: (await this.snapshotAt(prefix.head)).snapshot };
+    const now = new Date(Math.max(Date.parse(input.now ?? new Date().toISOString()), Date.parse(currentView.node.createdAt) + 1)).toISOString();
+    if (!['profile', 'trace', 'story', 'candidate'].includes(input.target)) throw new StateChainError('WM_INVALID_REQUEST', 'invalid manual target');
+    if (input.action && !['lock', 'unlock', 'restore-ai'].includes(input.action)) throw new StateChainError('WM_INVALID_REQUEST', 'invalid manual action');
+    if (input.action && input.target !== 'profile') throw new StateChainError('WM_INVALID_REQUEST', 'locks apply to profile fields');
+    const assertPath = (path: string): void => {
+      if (!path || path.split('.').some(part => !part || ['__proto__', 'prototype', 'constructor', 'source', 'characterId', 'updatedAt', 'sourcePriority', 'lockedPaths'].includes(part))) throw new StateChainError('WM_INVALID_REQUEST', 'invalid manual field path');
+    };
+    const profilePaths = new Set(['canonicalName', 'aliases', 'lifeDetails', 'basic.gender', 'basic.age', 'basic.birthday', 'basic.race', 'basic.notes', 'appearance.height', 'appearance.build', 'appearance.face', 'appearance.hair', 'appearance.eyes', 'appearance.distinctiveFeatures', 'appearance.clothingStyle', 'appearance.notes', 'identity.occupation', 'identity.organizations', 'identity.socialIdentity', 'identity.background', 'identity.importantRelations', 'personality.coreTraits', 'personality.behaviorStyle', 'personality.expressionHabits', 'personality.likes', 'personality.dislikes', 'personality.principles']);
+    if (input.target === 'profile' && input.fieldPath && !profilePaths.has(input.fieldPath)) throw new StateChainError('WM_INVALID_REQUEST', 'unknown profile field');
+    if (input.lockedPaths?.some(path => !profilePaths.has(path))) throw new StateChainError('WM_INVALID_REQUEST', 'unknown lock field');
+    if (input.action && !input.fieldPath) throw new StateChainError('WM_INVALID_REQUEST', 'fieldPath is required');
+    if (input.fieldPath) assertPath(input.fieldPath);
+    if (input.entityId && ['__proto__', 'prototype', 'constructor'].includes(input.entityId)) throw new StateChainError('WM_INVALID_REQUEST', 'invalid entity id');
+    if (input.lockedPaths) input.lockedPaths.forEach(assertPath);
+    const setField = (target: object, path: string, value: unknown): void => {
+      const parts = path.split('.');
+      if (parts.length > 2) throw new StateChainError('WM_INVALID_REQUEST', 'unsupported manual field path');
+      const record = target as Record<string, unknown>;
+      if (parts.length === 1) {
+        if (value === '') delete record[parts[0]];
+        else record[parts[0]] = value;
+      }
+      else {
+        const group = record[parts[0]];
+        if (!group || typeof group !== 'object' || Array.isArray(group)) throw new StateChainError('WM_INVALID_REQUEST', 'invalid manual field group');
+        if (value === '') delete (group as Record<string, unknown>)[parts[1]];
+        else (group as Record<string, unknown>)[parts[1]] = value;
+      }
+    };
     let snapshot = deepClone(currentView.snapshot);
     let changed = false;
 
@@ -414,14 +445,7 @@ export class StateChainEngine {
           changed = true;
         }
       } else if (input.fieldPath && input.value !== undefined) {
-        const segments = input.fieldPath.split('.');
-        if (segments.length === 1) {
-          (profile as any)[segments[0]] = input.value;
-        } else if (segments.length === 2) {
-          const group = (profile as any)[segments[0]] ?? {};
-          group[segments[1]] = input.value;
-          (profile as any)[segments[0]] = group;
-        }
+        setField(profile, input.fieldPath, input.value);
         profile.sourcePriority[input.fieldPath] = 'manual';
         profile.updatedAt = now;
         changed = true;
@@ -447,77 +471,62 @@ export class StateChainEngine {
         changed = true;
       }
       if (input.fieldPath && input.value !== undefined) {
-        const segments = input.fieldPath.split('.');
-        if (segments.length === 1) {
-          (trace as any)[segments[0]] = input.value;
-        } else if (segments.length === 2) {
-          const group = (trace as any)[segments[0]] ?? {};
-          group[segments[1]] = input.value;
-          (trace as any)[segments[0]] = group;
-        }
+        setField(trace, input.fieldPath, input.value);
+        trace.source.sourceType = 'manual';
         trace.updatedAt = now;
         changed = true;
       }
     } else if (input.target === 'story') {
       if (input.fieldPath && input.value !== undefined) {
-        const segments = input.fieldPath.split('.');
-        if (segments.length === 1) {
-          (snapshot.story as any)[segments[0]] = input.value;
-        } else if (segments.length === 2) {
-          const group = (snapshot.story as any)[segments[0]] ?? {};
-          group[segments[1]] = input.value;
-          (snapshot.story as any)[segments[0]] = group;
-        }
+        setField(snapshot.story, input.fieldPath, input.value);
         if (snapshot.story.source) snapshot.story.source.sourceType = 'manual';
         changed = true;
       }
     } else if (input.target === 'candidate' && input.candidate) {
+      validateStateAnalysisResponse(input.candidate);
       const applied = applyCandidate(snapshot, input.candidate, {
         branchId: input.branchId,
         floorId: currentView.node?.floorId ?? 'manual-floor',
         hostChatId: input.chatId,
         now
       });
+      for (const [id, profile] of Object.entries(applied.snapshot.profiles)) {
+        const old = snapshot.profiles[id];
+        for (const path of profilePaths) {
+          const read = (value: unknown): unknown => path.split('.').reduce<unknown>((entry, key) => entry && typeof entry === 'object' ? (entry as Record<string, unknown>)[key] : undefined, value);
+          if (JSON.stringify(read(old)) !== JSON.stringify(read(profile))) profile.sourcePriority[path] = 'manual';
+        }
+      }
+      for (const [id, trace] of Object.entries(applied.snapshot.traces)) {
+        if (JSON.stringify(trace) !== JSON.stringify(snapshot.traces[id])) trace.source.sourceType = 'manual';
+      }
+      if (JSON.stringify(applied.snapshot.story) !== JSON.stringify(snapshot.story) && applied.snapshot.story.source) applied.snapshot.story.source.sourceType = 'manual';
       snapshot = applied.snapshot;
       changed = applied.changed;
     }
 
     if (changed) {
       snapshot.updatedAt = now;
+      validateStateSnapshot(snapshot, { branchId: input.branchId });
       const stateFingerprint = snapshotFingerprint(snapshot);
-      if (currentView.node) {
-        const checkpointId = currentView.node.checkpointId ?? newCheckpointId();
-        await chain.upsertCheckpoint({
-          checkpointId,
-          chatId: input.chatId,
-          branchId: input.branchId,
-          stateNodeId: currentView.node.stateNodeId,
-          snapshot,
-          snapshotFingerprint: stateFingerprint,
-          createdAt: now
-        });
-        await chain.updateNodeCheckpoint(currentView.node.stateNodeId, checkpointId, stateFingerprint);
-        await chain.upsertBranchHead({
-          branchId: input.branchId,
-          chatId: input.chatId,
-          stateNodeId: currentView.node.stateNodeId,
-          snapshot,
-          snapshotFingerprint: stateFingerprint,
-          updatedAt: now
-        });
-      } else {
-        await chain.upsertBranchHead({
-          branchId: input.branchId,
-          chatId: input.chatId,
-          stateNodeId: 'manual-root',
-          snapshot,
-          snapshotFingerprint: stateFingerprint,
-          updatedAt: now
-        });
-      }
+      const head = currentView.node;
+      const previous = head.previousStateNodeId ? await chain.getNode(head.previousStateNodeId) : null;
+      const previousSnapshot = previous ? (await this.snapshotAt(previous)).snapshot : emptySnapshot(input.branchId);
+      const parts = partitionChanges(diffValues(previousSnapshot, snapshot));
+      const stateNodeId = newStateNodeId();
+      const deltaId = newDeltaId();
+      const checkpointId = newCheckpointId();
+      const replacement: StateNodeRecord = { ...head, stateNodeId, deltaId, checkpointId, previousStateNodeId: head.previousStateNodeId, previousStateFingerprint: head.previousStateFingerprint, stateFingerprint, status: 'stale', createdAt: now, updatedAt: now };
+      const delta: StateDeltaRecord = { deltaId, stateNodeId, floorId: head.floorId, previousStateNodeId: replacement.previousStateNodeId, ...parts, createdAt: now };
+        await chain.insertDelta(delta);
+        await chain.insertNode(replacement);
+        await chain.insertCheckpoint({ checkpointId, chatId: input.chatId, branchId: input.branchId, stateNodeId, snapshot, snapshotFingerprint: stateFingerprint, createdAt: now });
+        await chain.upsertBranchHead({ branchId: input.branchId, chatId: input.chatId, stateNodeId, snapshot, snapshotFingerprint: stateFingerprint, updatedAt: now });
+      await this.syncStatuses(await this.trustedPrefix(input.chatId, input.branchId));
     }
 
     return { snapshot, changed };
+    });
   }
 
   async snapshotAtFloor(chatId: string, branchId: string, messageIndex: number, swipeId: number | null): Promise<FloorStateView | null> {

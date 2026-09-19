@@ -182,6 +182,22 @@ export class StateTaskRunner {
 
   constructor(private readonly deps: StateTaskRunnerDeps) {}
 
+  async manualEdit(input: Parameters<StateChainEngine['applyManualEdit']>[0]) {
+    const chain = this.deps.chain;
+    if (!chain) throw new StateTaskError('WM_STATE_SYNC_FAILED', 'state chain unavailable');
+    const result = await this.deps.queue.run(input.chatId, async () => {
+      const before = await chain.current(input.chatId, input.branchId);
+      const edited = await chain.applyManualEdit(input);
+      if (edited.changed && before.prefix.head) await this.deps.onFloorsStale?.({ chatId: input.chatId, branchId: input.branchId, floorIds: before.prefix.positions.filter(position => position.messageIndex >= before.prefix.head!.messageIndex).map(position => position.floorId) });
+      return edited;
+    });
+    if (result.changed) {
+      await this.rebuild({ chatId: input.chatId, branchId: input.branchId });
+      void this.deps.onStateCommitted?.({ chatId: input.chatId, branchId: input.branchId }).catch(error => console.error('[WeaveMemory] manual edit memory scheduling failed', errorMessage(error)));
+    }
+    return result;
+  }
+
   /** Registers a job for a finalized floor. Must be called while holding the chat's queue slot. */
   async enqueueForFloor(input: EnqueueFloorInput): Promise<EnqueueOutcome> {
     const { tasks, aiConfig, context, store, chain } = this.deps;

@@ -3,7 +3,7 @@ import type { LongMemoryRecord } from './long-memory';
 import { estimateTokens as estimateTextTokens } from '../state/current-state';
 
 export const TOKEN_PACKER_DEFAULTS = { maxMemoryCount: 6, fixedRecentCount: 2, minimumTokens: 2000, maximumTokens: 6000, contextRatio: 0.03 } as const;
-export type TokenPackOptions = { contextWindow: number; maxMemoryCount?: number; fixedRecentCount?: number; tokenLimit?: number; currentState?: string };
+export type TokenPackOptions = { contextWindow: number; maxMemoryCount?: number; fixedRecentCount?: number; tokenLimit?: number; currentState?: string; tokenRatio?: number; minTokenBudget?: number; maxTokenBudget?: number };
 export type TokenPackInput = { recallCandidates: FusedMemory[]; fixedRecentMemories: LongMemoryRecord[] };
 export type PackCandidate = { memory: LongMemoryRecord; source: 'fixed_recent' | 'high_relevance'; fused?: FusedMemory };
 export type PackedMemory = PackCandidate & { priority: PackCandidate['source']; estimatedTokens: number };
@@ -15,10 +15,13 @@ export type TokenPackResult = {
 /** Shared conservative estimate: CJK scripts cost one token per code point; other text uses four chars per token. */
 export function estimateTokens(text: string): number { return estimateTextTokens(text); }
 
-export function tokenLimit(contextWindow: number, override?: number): number {
+export function tokenLimit(contextWindow: number, override?: number, settings: Pick<TokenPackOptions, 'tokenRatio' | 'minTokenBudget' | 'maxTokenBudget'> = {}): number {
   if (override !== undefined && Number.isSafeInteger(override) && override >= 0) return override;
   const context = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 0;
-  return Math.max(TOKEN_PACKER_DEFAULTS.minimumTokens, Math.min(context * TOKEN_PACKER_DEFAULTS.contextRatio, TOKEN_PACKER_DEFAULTS.maximumTokens));
+  const min = settings.minTokenBudget ?? TOKEN_PACKER_DEFAULTS.minimumTokens;
+  const max = settings.maxTokenBudget ?? TOKEN_PACKER_DEFAULTS.maximumTokens;
+  const ratio = settings.tokenRatio ?? TOKEN_PACKER_DEFAULTS.contextRatio;
+  return Math.max(min, Math.min(context * ratio, max));
 }
 
 function memoryText(item: LongMemoryRecord): string {
@@ -36,7 +39,7 @@ export function renderLongMemory(memories: PackedMemory[]): string {
 export function packMemories(input: TokenPackInput, options: TokenPackOptions): TokenPackResult {
   const maxCount = Number.isSafeInteger(options.maxMemoryCount) && (options.maxMemoryCount as number) >= 0 ? options.maxMemoryCount as number : TOKEN_PACKER_DEFAULTS.maxMemoryCount;
   const fixedCount = Math.min(maxCount, Number.isSafeInteger(options.fixedRecentCount) && (options.fixedRecentCount as number) >= 0 ? options.fixedRecentCount as number : TOKEN_PACKER_DEFAULTS.fixedRecentCount);
-  const limit = tokenLimit(options.contextWindow, options.tokenLimit);
+  const limit = tokenLimit(options.contextWindow, options.tokenLimit, options);
   const fixed = input.fixedRecentMemories.slice(0, fixedCount).map(memory => ({ memory, source: 'fixed_recent' as const }));
   const recall = input.recallCandidates.map(fused => ({ memory: fused.memory, source: 'high_relevance' as const, fused }));
   const ordered: PackCandidate[] = [];

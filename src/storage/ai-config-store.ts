@@ -22,10 +22,12 @@ import {
   type StateTaskSettings
   , type LongMemorySettings
   , type RecallSettings
+  , DEFAULT_LONG_MEMORY_SETTINGS
   , DEFAULT_RECALL_SETTINGS
   , RECALL_SETTING_LIMITS
 } from '../ai/types';
 import type { SqliteDatabase } from './sqlite-database';
+import { DEFAULT_LONG_MEMORY_PROMPT } from '../memory/long-memory';
 
 export class AiConfigError extends Error {
   constructor(message: string, readonly code: string = 'WM_INVALID_REQUEST') {
@@ -45,7 +47,8 @@ const metaActivePrompt = (type: PromptType): string => `prompt.active.${type}`;
 export const BUILTIN_PRESET_IDS: Record<PromptType, string> = { state: 'builtin:state', summary: 'builtin:summary' };
 
 const BUILTIN_PRESETS: Partial<Record<PromptType, { name: string; content: PromptContent; version: number }>> = {
-  state: { name: '内置默认（状态分析）', content: DEFAULT_STATE_PROMPT, version: BUILTIN_STATE_PROMPT_VERSION }
+  state: { name: '内置默认（状态分析）', content: DEFAULT_STATE_PROMPT, version: BUILTIN_STATE_PROMPT_VERSION },
+  summary: { name: '内置默认（长期记忆总结）', content: DEFAULT_LONG_MEMORY_PROMPT, version: 1 }
 };
 
 type ChannelRow = {
@@ -330,6 +333,10 @@ export class AiConfigStore {
       const existing = await this.presetRow(presetId);
       const contentJson = JSON.stringify(builtin.content);
       if (existing && existing.content_json === contentJson && existing.version === builtin.version && existing.name === builtin.name) continue;
+      if (type === 'summary' && existing) {
+        const activeId = await this.getMeta(metaActivePrompt(type));
+        if (!activeId || activeId === presetId) await this.invalidateSummary();
+      }
       await this.database.run(
         `INSERT INTO prompt_presets(preset_id, prompt_type, name, content_json, version, is_default, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 1, ?, ?)
@@ -356,6 +363,7 @@ export class AiConfigStore {
   }
 
   async savePreset(input: PromptPresetInput): Promise<PromptPresetRecord> {
+    return this.database.transaction(async () => {
     if (!isPromptType(input.promptType)) throw new AiConfigError(`promptType must be one of ${PROMPT_TYPES.join(', ')}`);
     const name = requireText(input.name, 'name', 80);
     const content = validatePromptContent(input.content);
@@ -374,7 +382,9 @@ export class AiConfigStore {
     );
     const saved = await this.presetRow(presetId);
     if (!saved) throw new AiConfigError('prompt preset could not be saved', 'WM_INTERNAL_ERROR');
+    if (input.promptType === 'summary' && (await this.getActivePrompt('summary')).preset.presetId === presetId) await this.invalidateSummary();
     return presetRecord(saved);
+    });
   }
 
   async deletePreset(presetId: string): Promise<{ deleted: boolean; activePresetId: string }> {
@@ -383,6 +393,7 @@ export class AiConfigStore {
     if (existing.is_default === 1) throw new AiConfigError('builtin presets cannot be deleted');
     const type = existing.prompt_type as PromptType;
     await this.database.transaction(async () => {
+      if (type === 'summary' && (await this.getMeta(metaActivePrompt(type))) === presetId) await this.invalidateSummary();
       await this.database.run('DELETE FROM prompt_presets WHERE preset_id = ?', [presetId]);
       if ((await this.getMeta(metaActivePrompt(type))) === presetId) await this.setMeta(metaActivePrompt(type), BUILTIN_PRESET_IDS[type]);
     });
@@ -393,13 +404,19 @@ export class AiConfigStore {
     if (!isPromptType(promptType)) throw new AiConfigError(`promptType must be one of ${PROMPT_TYPES.join(', ')}`);
     const row = await this.presetRow(presetId);
     if (!row || row.prompt_type !== promptType) throw new AiConfigError('presetId does not exist for this promptType');
-    await this.setMeta(metaActivePrompt(promptType), presetId);
+    await this.database.transaction(async () => {
+      await this.setMeta(metaActivePrompt(promptType), presetId);
+      if (promptType === 'summary') await this.invalidateSummary();
+    });
     return this.getActivePrompt(promptType);
   }
 
   async resetPrompt(promptType: unknown): Promise<ActivePrompt> {
     if (!isPromptType(promptType)) throw new AiConfigError(`promptType must be one of ${PROMPT_TYPES.join(', ')}`);
-    await this.setMeta(metaActivePrompt(promptType), BUILTIN_PRESET_IDS[promptType]);
+    await this.database.transaction(async () => {
+      await this.setMeta(metaActivePrompt(promptType), BUILTIN_PRESET_IDS[promptType]);
+      if (promptType === 'summary') await this.invalidateSummary();
+    });
     return this.getActivePrompt(promptType);
   }
 
@@ -417,7 +434,17 @@ export class AiConfigStore {
     return this.database.get<PresetRow>('SELECT * FROM prompt_presets WHERE preset_id = ?', [presetId]);
   }
 
+  private async invalidateSummary(): Promise<void> {
+    const now = new Date().toISOString();
+    await this.database.run('UPDATE long_memory_batches SET stale = 1, updated_at = ? WHERE stale = 0', [now]);
+    await this.database.run('UPDATE long_memories SET stale = 1, bm25_indexed = 0, embedding_indexed = 0, updated_at = ? WHERE stale = 0', [now]);
+  }
+
   // ---------------------------------------------------------------- state task settings
+
+  async saveSettings(state: Partial<StateTaskSettings>, longMemory: Partial<LongMemorySettings>, recall: Partial<RecallSettings>): Promise<{ state: StateTaskSettings; longMemory: LongMemorySettings; recall: RecallSettings }> {
+    return this.database.transaction(async () => ({ state: await this.saveStateTaskSettings(state), longMemory: await this.saveLongMemorySettings(longMemory), recall: await this.saveRecallSettings(recall) }));
+  }
 
   async getStateTaskSettings(): Promise<StateTaskSettings> {
     const raw = await this.getMeta(META_STATE_SETTINGS);
@@ -436,16 +463,18 @@ export class AiConfigStore {
 
   async getLongMemorySettings(): Promise<LongMemorySettings> {
     const raw = await this.getMeta(META_LONG_MEMORY_SETTINGS);
-    if (!raw) return { summaryIntervalFloors: 30 };
-    try { const parsed = JSON.parse(raw) as Partial<LongMemorySettings>; const value = Number(parsed.summaryIntervalFloors); return { summaryIntervalFloors: Number.isSafeInteger(value) && value >= 1 && value <= 500 ? value : 30 }; }
-    catch { return { summaryIntervalFloors: 30 }; }
+    if (!raw) return { ...DEFAULT_LONG_MEMORY_SETTINGS };
+    try { const parsed = JSON.parse(raw) as Partial<LongMemorySettings>; const interval = Number(parsed.summaryIntervalFloors); const latest = Number(parsed.latestForcedCount); return { summaryIntervalFloors: Number.isSafeInteger(interval) && interval >= 1 && interval <= 500 ? interval : 30, latestForcedCount: Number.isSafeInteger(latest) && latest >= 0 && latest <= 20 ? latest : 2 }; }
+    catch { return { ...DEFAULT_LONG_MEMORY_SETTINGS }; }
   }
 
   async saveLongMemorySettings(patch: Partial<LongMemorySettings>): Promise<LongMemorySettings> {
     const current = await this.getLongMemorySettings();
     const value = Number(patch.summaryIntervalFloors ?? current.summaryIntervalFloors);
+    const latest = Number(patch.latestForcedCount ?? current.latestForcedCount);
     if (!Number.isSafeInteger(value) || value < 1 || value > 500) throw new AiConfigError('summaryIntervalFloors must be between 1 and 500');
-    const next = { summaryIntervalFloors: value };
+    if (!Number.isSafeInteger(latest) || latest < 0 || latest > 20) throw new AiConfigError('latestForcedCount must be between 0 and 20');
+    const next = { summaryIntervalFloors: value, latestForcedCount: latest };
     await this.setMeta(META_LONG_MEMORY_SETTINGS, JSON.stringify(next));
     return next;
   }
@@ -467,6 +496,14 @@ export class AiConfigStore {
       if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new AiConfigError(`${field} must be an integer between ${min} and ${max}`);
       next[field] = value;
     }
+    for (const field of ['tokenRatio', 'minTokenBudget', 'maxTokenBudget'] as const) {
+      const value = patch[field];
+      if (value === undefined) continue;
+      const { min, max } = RECALL_SETTING_LIMITS[field];
+      if (typeof value !== 'number' || !Number.isFinite(value) || (field !== 'tokenRatio' && !Number.isSafeInteger(value)) || value < min || value > max) throw new AiConfigError(`${field} must be between ${min} and ${max}${field === 'tokenRatio' ? '' : ' (integer)'}`);
+      next[field] = value;
+    }
+    if (next.minTokenBudget > next.maxTokenBudget) throw new AiConfigError('minTokenBudget cannot exceed maxTokenBudget');
     if (patch.rerankEnabled !== undefined) {
       if (typeof patch.rerankEnabled !== 'boolean') throw new AiConfigError('rerankEnabled must be a boolean');
       next.rerankEnabled = patch.rerankEnabled;
@@ -513,6 +550,12 @@ function normalizeRecallSettings(parsed: Partial<RecallSettings>): RecallSetting
     const { min, max } = RECALL_SETTING_LIMITS[field];
     if (Number.isSafeInteger(value) && value >= min && value <= max) next[field] = value;
   }
+  for (const field of ['tokenRatio', 'minTokenBudget', 'maxTokenBudget'] as const) {
+    const value = Number(parsed[field]);
+    const { min, max } = RECALL_SETTING_LIMITS[field];
+    if (Number.isFinite(value) && (field === 'tokenRatio' || Number.isSafeInteger(value)) && value >= min && value <= max) next[field] = value;
+  }
+  if (next.minTokenBudget > next.maxTokenBudget) return { ...DEFAULT_RECALL_SETTINGS };
   if (typeof parsed.rerankEnabled === 'boolean') next.rerankEnabled = parsed.rerankEnabled;
   return next;
 }

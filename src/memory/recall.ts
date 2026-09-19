@@ -35,6 +35,7 @@ export type RecallResult = {
   /** Final candidates after RRF (and the reranker when applied), capped at `finalRecallCount`. */
   final: FusedMemory[];
   errors: RecallStageError[];
+  timings?: { bm25Ms: number; embeddingMs: number; rrfMs: number; rerankMs: number; totalMs: number };
 };
 
 export type RecallOptions = Partial<Pick<RecallSettings, 'bm25TopK' | 'embeddingTopK' | 'rrfK' | 'rerankCandidateLimit' | 'finalRecallCount'>> & { rerankEnabled?: boolean };
@@ -76,20 +77,31 @@ export class RecallService {
   constructor(private readonly bm25: RecallBm25, private readonly embedding: RecallEmbedding, private readonly aiConfig: RecallConfig, private readonly client: RecallClient) {}
 
   async recall(chatId: string, branchId: string, query: string, options: RecallOptions = {}): Promise<RecallResult> {
+    const startedAt = performance.now();
+    const timings = { bm25Ms: 0, embeddingMs: 0, rrfMs: 0, rerankMs: 0, totalMs: 0 };
+    const timed = async <T>(key: 'bm25Ms' | 'embeddingMs', work: () => Promise<T>): Promise<T> => {
+      const start = performance.now();
+      try { return await work(); } finally { timings[key] = performance.now() - start; }
+    };
     const settings = { ...await this.aiConfig.getRecallSettings(), ...definedOnly(options) };
     const errors: RecallStageError[] = [];
     const [bm25, embedding] = await Promise.all([
-      this.stage('bm25', errors, () => this.bm25.search(chatId, branchId, query, settings.bm25TopK)),
-      this.stage('embedding', errors, () => this.embedding.search(chatId, branchId, query, settings.embeddingTopK))
+      timed('bm25Ms', () => this.stage('bm25', errors, () => this.bm25.search(chatId, branchId, query, settings.bm25TopK))),
+      timed('embeddingMs', () => this.stage('embedding', errors, () => this.embedding.search(chatId, branchId, query, settings.embeddingTopK)))
     ]);
     if (bm25 === null && embedding === null) {
       const first = errors[0];
       throw new AiRequestError('WM_AI_REQUEST_FAILED', `long memory recall failed: ${first?.message ?? 'both retrieval sources failed'}`, false);
     }
+    const fusionStart = performance.now();
     const rrf = reciprocalRankFusion([{ source: 'bm25', results: bm25 ?? [] }, { source: 'embedding', results: embedding ?? [] }], settings.rrfK);
+    timings.rrfMs = performance.now() - fusionStart;
+    const rerankStart = performance.now();
     const rerank = await this.rerankStage(query, rrf, settings, errors);
     const ordered: FusedMemory[] = rerank.status === 'applied' ? rerank.candidates : rrf;
-    return { query, settings, bm25: bm25 ?? [], embedding: embedding ?? [], rrf, rerank, final: ordered.slice(0, settings.finalRecallCount), errors };
+    timings.rerankMs = performance.now() - rerankStart;
+    timings.totalMs = performance.now() - startedAt;
+    return { query, settings, bm25: bm25 ?? [], embedding: embedding ?? [], rrf, rerank, final: ordered.slice(0, settings.finalRecallCount), errors, timings };
   }
 
   private async stage<T>(source: RecallSource, errors: RecallStageError[], work: () => Promise<T>): Promise<T | null> {

@@ -76,16 +76,20 @@ export async function init(router: Router): Promise<void> {
   longMemoryStore = new LongMemoryStore(openedDatabase);
   await longMemoryStore.resetBm25Indexed();
   await longMemoryStore.resetEmbeddingIndexed();
-  const longMemoryGenerator = new LongMemoryGenerator({ aiConfig, client, store: longMemoryStore });
+  const longMemoryGenerator = new LongMemoryGenerator({ aiConfig, client, store: longMemoryStore, currentInput: async input => {
+    await chain.syncStatuses(await chain.trustedPrefix(input.chatId, input.branchId));
+    if (!longMemoryScheduler) throw new Error('summary scheduler unavailable');
+    return longMemoryScheduler.buildRange(input.chatId, input.branchId, input.batchStartFloor, input.batchEndFloor);
+  } });
   const bm25 = new Bm25SearchService(longMemoryStore);
   const embedding = new EmbeddingSearchService(longMemoryStore, aiConfig, client);
   const recall = new RecallService(bm25, embedding, aiConfig, client);
-  longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator, getSummaryIntervalFloors: async () => (await aiConfig.getLongMemorySettings()).summaryIntervalFloors });
-  const activeRuntime = new MemoryRuntime(store, queue, runner, chain, recall, longMemoryStore);
+  longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator, getSummaryIntervalFloors: async () => (await aiConfig.getLongMemorySettings()).summaryIntervalFloors, synchronize: async (chatId, branchId) => { await chain.syncStatuses(await chain.trustedPrefix(chatId, branchId)); } });
+  const activeRuntime = new MemoryRuntime(store, queue, runner, chain, recall, longMemoryStore, aiConfig);
   registerRoutes(router, activeRuntime, openedDatabase);
-  registerAiRoutes(router, { aiConfig, client, stateTasks: runner });
+  registerAiRoutes(router, { aiConfig, client, stateTasks: runner, summaryGenerator: longMemoryGenerator });
   registerStateRoutes(router, { stateTasks: runner, chain, store });
-  registerMemoryRoutes(router, { generator: longMemoryGenerator, store: longMemoryStore, bm25, embedding, recall });
+  registerMemoryRoutes(router, { generator: longMemoryGenerator, store: longMemoryStore, bm25, embedding, recall, aiConfig, scheduler: longMemoryScheduler });
   await runner.resumePending();
   void longMemoryStore.listScopes().then(async scopes => {
     for (const scope of scopes) {

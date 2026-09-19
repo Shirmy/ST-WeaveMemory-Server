@@ -9,7 +9,9 @@ import { buildRecentContext } from '../state/recent-context';
 import { resolveExternalMappings } from '../state/external-mapping';
 import type { RecallService } from '../memory/recall';
 import type { LongMemoryStore } from '../storage/long-memory-store';
+import type { AiConfigStore } from '../storage/ai-config-store';
 import { packMemories } from '../memory/token-packer';
+import { recordDiagnostics, currentDiagnostics } from './diagnostics';
 
 const GENERATION_GATE_TIMEOUT_MS = 45_000;
 const GENERATION_GATE_POLL_MS = 150;
@@ -28,7 +30,8 @@ export class MemoryRuntime {
     private readonly stateTasks: StateTaskRunner | null = null,
     private readonly chain: StateChainEngine | null = null,
     private readonly recall: RecallService | null = null,
-    private readonly longMemories: Pick<LongMemoryStore, 'list'> | null = null
+    private readonly longMemories: Pick<LongMemoryStore, 'list'> | null = null,
+    private readonly aiConfig: Pick<AiConfigStore, 'getLongMemorySettings' | 'getRecallSettings'> | null = null
   ) {}
 
   async finalizeFloor(input: FloorFinalizeRequest): Promise<FloorFinalizeResult> {
@@ -89,6 +92,12 @@ export class MemoryRuntime {
     return this.queue.run(input.chatId, () => this.store.bindHostChat(input));
   }
 
+  async debugCurrent(chatId: string, branchId: string) {
+    const tasks = await this.stateTasks?.listTasks({ chatId, branchId, limit: 100 }) ?? [];
+    const last = tasks.filter(task => task.result).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    return { ...currentDiagnostics(chatId, branchId), stateTask: last?.result ? { durationMs: last.result.diagnostics.durationMs, model: last.result.diagnostics.model, channelId: last.result.diagnostics.channelId, promptVersion: last.result.diagnostics.promptVersion } : null };
+  }
+
   async prepareGeneration(input: GenerationPrepareRequest) {
     const branchId = await this.store.getOrCreateActiveBranch(input.chatId);
     if (!this.chain || !this.stateTasks) return this.gateFailure('STATE_SYNC_FAILED', null);
@@ -127,8 +136,12 @@ export class MemoryRuntime {
             const query = [input.latestUserText, ...recentItems.map(item => item.text)].filter(text => text.trim()).join('\n');
             const recalled = await this.recall.recall(input.chatId, branchId, query);
             const active = await this.longMemories.list(input.chatId, branchId);
-            const fixedRecent = active.sort((left, right) => right.endFloor - left.endFloor || right.startFloor - left.startFloor || left.memoryId.localeCompare(right.memoryId)).slice(0, 2);
-            const packed = packMemories({ recallCandidates: recalled.final, fixedRecentMemories: fixedRecent }, { contextWindow: input.contextSize, currentState: rendered.text });
+            const longSettings = this.aiConfig ? await this.aiConfig.getLongMemorySettings() : { latestForcedCount: 2 };
+            const recallSettings = this.aiConfig ? await this.aiConfig.getRecallSettings() : undefined;
+            const fixedRecent = active.sort((left, right) => right.endFloor - left.endFloor || right.startFloor - left.startFloor || left.memoryId.localeCompare(right.memoryId)).slice(0, longSettings.latestForcedCount);
+            const packStarted = performance.now();
+            const packed = packMemories({ recallCandidates: recalled.final, fixedRecentMemories: fixedRecent }, { contextWindow: input.contextSize, currentState: rendered.text, fixedRecentCount: longSettings.latestForcedCount, maxMemoryCount: recallSettings?.finalRecallCount, tokenRatio: recallSettings?.tokenRatio, minTokenBudget: recallSettings?.minTokenBudget, maxTokenBudget: recallSettings?.maxTokenBudget });
+            recordDiagnostics(input.chatId, branchId, { recall: { at: new Date().toISOString(), timings: recalled.timings, packMs: performance.now() - packStarted, errors: recalled.errors } });
             longMemory = packed.text;
             memoryDiagnostics = { memoryCount: packed.diagnostics.packedCount, memoryTokens: packed.estimatedTokens, memoryTokenLimit: packed.tokenLimit, recallCandidateCount: packed.diagnostics.recallCandidateCount, fixedRecentCount: packed.diagnostics.fixedRecentCandidateCount, packedFixedRecentCount: packed.diagnostics.packedFixedRecentCount, packedHighRelevanceCount: packed.diagnostics.packedHighRelevanceCount, skippedByTokenBudget: packed.diagnostics.skippedByTokenBudget, skippedByCount: packed.diagnostics.skippedByCount };
           } catch (error) {
@@ -136,6 +149,7 @@ export class MemoryRuntime {
             return this.gateFailure('LONG_MEMORY_RECALL_FAILED', previous?.node?.stateNodeId ?? null);
           }
         }
+        recordDiagnostics(input.chatId, branchId, { generation: { at: new Date().toISOString(), longMemory, currentState: rendered.text, estimatedTokens: rendered.tokens + memoryDiagnostics.memoryTokens } });
         return { ready: true, longMemory, currentState: rendered.text, diagnostics: { ...memoryDiagnostics, stateTokens: rendered.tokens, stateNodeId: previous?.node?.stateNodeId, externalSource: external?.source ?? null, mvuDetected: external?.detected ?? false, sourceMessageIndex: external?.messageIndex ?? null, sourceSwipeId: external?.swipeId ?? null, mappingCount: resolution.mappingCount, activeEquivalentMappings: resolution.activeEquivalentMappings, activeRelatedMappings: resolution.activeRelatedMappings, suppressedWeaveFields: resolution.suppressedWeaveFields, mappingFailures: resolution.mappingFailures, tokensBeforeMapping: before.tokens, tokensAfterMapping: rendered.tokens } };
       }
       const status = await this.positionStatus(previous, input.chatId);

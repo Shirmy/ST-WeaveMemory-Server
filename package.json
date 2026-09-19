@@ -35,7 +35,10 @@
     "test:embedding": "tsc -p tsconfig.test.json && node .test-dist/tests/embedding-acceptance.js",
     "test:recall": "tsc -p tsconfig.test.json && node .test-dist/tests/recall-acceptance.js",
     "test:token-packer": "tsc -p tsconfig.test.json && node .test-dist/tests/token-packer-acceptance.js",
-    "test:long-memory-injection": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-injection-acceptance.js"
+    "test:long-memory-injection": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-injection-acceptance.js",
+    "test:manual-state-edit": "tsc -p tsconfig.test.json && node .test-dist/tests/manual-state-edit-acceptance.js",
+    "test:phase16-api": "tsc -p tsconfig.test.json && node .test-dist/tests/phase16-api-acceptance.js",
+    "test:prompt-summary": "tsc -p tsconfig.test.json && node .test-dist/tests/phase16-api-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",

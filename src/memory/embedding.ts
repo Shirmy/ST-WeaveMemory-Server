@@ -182,7 +182,8 @@ export class EmbeddingSearchService {
         console.warn('[WeaveMemory] embedding failed for memory', record.memoryId, error instanceof Error ? error.message : String(error));
       }
     }
-    const newlyIndexed = indexedIds.filter(memoryId => !scope.indexedIds.has(memoryId));
+    const persistedIndexed = new Set(records.filter(record => record.embeddingIndexed).map(record => record.memoryId));
+    const newlyIndexed = indexedIds.filter(memoryId => !scope.indexedIds.has(memoryId) || !persistedIndexed.has(memoryId));
     const newlyFailed = failedIds.filter(memoryId => scope.indexedIds.has(memoryId));
     if (newlyIndexed.length) await this.store.setEmbeddingIndexed(newlyIndexed, true);
     if (newlyFailed.length) await this.store.setEmbeddingIndexed(newlyFailed, false);

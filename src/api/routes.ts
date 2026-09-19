@@ -3,10 +3,11 @@ import type { Router } from 'express';
 import { API_VERSION, BACKEND_VERSION, SCHEMA_VERSION, type ActivateBranchRequest, type ChatReconcileRequest, type CreateBranchRequest, type FloorFinalizeRequest, type GenerationPrepareRequest, type HostChatBindingRequest } from '../protocol';
 import { MemoryRuntime } from '../core/runtime';
 import type { SqliteDatabase } from '../storage/sqlite-database';
-import { requiredString } from './request-utils';
+import { requiredString, wrapRoute } from './request-utils';
 
 export function registerRoutes(router: Router, runtime: MemoryRuntime, database: SqliteDatabase): void {
   const json = bodyParser.json({ limit: '2mb' });
+  router.get('/debug/current', wrapRoute(async req => ({ ...await runtime.debugCurrent(requiredString(req.query.chatId, 'chatId'), requiredString(req.query.branchId, 'branchId')), database: await database.health() })));
 
   router.get('/health', async (_req, res) => {
     try {

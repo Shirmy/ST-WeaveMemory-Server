@@ -75,9 +75,9 @@ export type StateTaskSettings = {
   checkpointInterval: number;
 };
 
-export type LongMemorySettings = { summaryIntervalFloors: number };
-export const DEFAULT_LONG_MEMORY_SETTINGS: LongMemorySettings = { summaryIntervalFloors: 30 };
-export const LONG_MEMORY_SETTING_LIMITS = { summaryIntervalFloors: { min: 1, max: 500 } } as const;
+export type LongMemorySettings = { summaryIntervalFloors: number; latestForcedCount: number };
+export const DEFAULT_LONG_MEMORY_SETTINGS: LongMemorySettings = { summaryIntervalFloors: 30, latestForcedCount: 2 };
+export const LONG_MEMORY_SETTING_LIMITS = { summaryIntervalFloors: { min: 1, max: 500 }, latestForcedCount: { min: 0, max: 20 } } as const;
 
 /** Roadmap §61 / §62: long-memory recall pipeline settings (BM25 + Embedding → RRF → optional reranker). */
 export type RecallSettings = {
@@ -87,14 +87,20 @@ export type RecallSettings = {
   rerankEnabled: boolean;
   rerankCandidateLimit: number;
   finalRecallCount: number;
+  tokenRatio: number;
+  minTokenBudget: number;
+  maxTokenBudget: number;
 };
-export const DEFAULT_RECALL_SETTINGS: RecallSettings = { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: false, rerankCandidateLimit: 20, finalRecallCount: 6 };
+export const DEFAULT_RECALL_SETTINGS: RecallSettings = { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: false, rerankCandidateLimit: 20, finalRecallCount: 6, tokenRatio: 0.03, minTokenBudget: 2000, maxTokenBudget: 6000 };
 export const RECALL_SETTING_LIMITS = {
   bm25TopK: { min: 1, max: 100 },
   embeddingTopK: { min: 1, max: 100 },
   rrfK: { min: 1, max: 1000 },
   rerankCandidateLimit: { min: 1, max: 100 },
-  finalRecallCount: { min: 1, max: 50 }
+  finalRecallCount: { min: 1, max: 50 },
+  tokenRatio: { min: 0.001, max: 0.5 },
+  minTokenBudget: { min: 0, max: 100000 },
+  maxTokenBudget: { min: 1, max: 100000 }
 } as const;
 
 export const DEFAULT_STATE_TASK_SETTINGS: StateTaskSettings = { timeoutSec: 45, maxAttempts: 3, checkpointInterval: 20 };

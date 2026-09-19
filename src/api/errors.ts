@@ -2,6 +2,9 @@ import type { Response } from 'express';
 import { AiRequestError } from '../ai/openai-compatible-client';
 import { StateOutputError, StateTaskError } from '../ai/state-task-runner';
 import { AiConfigError } from '../storage/ai-config-store';
+import { StateChainError } from '../state/chain-engine';
+import { StateSchemaError } from '../state/schema';
+import { MemoryManagementError } from '../storage/long-memory-store';
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string, readonly detail?: unknown) {
@@ -15,11 +18,15 @@ function envelope(code: string, message: string, detail?: unknown): Record<strin
 }
 
 export function sendError(res: Response, error: unknown): void {
+  if (error instanceof StateChainError || error instanceof StateSchemaError) {
+    res.status(400).json(envelope(error instanceof StateChainError ? error.code : 'WM_INVALID_REQUEST', error.message));
+    return;
+  }
   if (error instanceof ApiError) {
     res.status(error.status).json(envelope(error.code, error.message, error.detail));
     return;
   }
-  if (error instanceof AiConfigError || error instanceof StateTaskError) {
+  if (error instanceof AiConfigError || error instanceof StateTaskError || error instanceof MemoryManagementError) {
     res.status(error.code === 'WM_INTERNAL_ERROR' ? 500 : 400).json(envelope(error.code, error.message));
     return;
   }

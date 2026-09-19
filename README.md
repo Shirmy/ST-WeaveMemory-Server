@@ -21,7 +21,19 @@ SillyTavern 长期记忆、人物状态与剧情脉络管理插件的服务端�
 - Phase 14：Token Packer。以 Phase 13 的 `result.final` 作为 Recall 输入；从当前 `chatId + branchId` 的 active 长期记忆中固定最近记忆，再按最终召回顺序补充高相关记忆；按 `memoryId` 去重，固定记忆优先；总数受 `maxMemoryCount` 与动态 Token 预算共同限制；中日韩文本使用更保守的 Token 估算；当前状态 Token 仅用于 diagnostics，不占长期记忆独立预算（`src/memory/token-packer.ts`）。
 - Phase 15：长期记忆注入。`/generation/prepare` 在状态同步通过后构建召回查询，执行 Phase 13 召回与 Phase 14 打包，从当前 scope 的 active 记忆中补固定最近项；注入文本按历史楼层顺序渲染并按 `memoryId` 去重，长期记忆和当前状态分别通过前端 `setExtensionPrompt()` 注入，长期记忆使用深位置；长期记忆数据库或召回核心失败时阻止生成（`src/core/runtime.ts`、`src/memory/token-packer.ts`、前端 `src/injection/prompts.ts`）。
 
-尚未实现：Phase 16 及之后阶段；「跟随 SillyTavern」渠道模式延后。
+Phase 16 修复已实现，最终 DONE 标记等待 SillyTavern 浏览器实机验收；Phase 17 数据管理未开始。「跟随 SillyTavern」渠道模式继续延后。
+
+## Phase 16 UI 与真实后端一致性
+
+前端保留主 drawer、人物（谱 / 迹）、事（现在 / 日历 / 剧情线 / 剧情安排）、长期记忆、设置与调试。渠道使用真实 `channelId` 契约，四类模型逐 role 保存；状态和长期总结 Prompt 均支持内置默认、用户副本、版本、切换、恢复、测试，测试只调用模型而不写正式状态 / 记忆。
+
+手动状态编辑必须基于有效节点，在同一 SQLite transaction 中新增同楼替代节点、新 Delta（前一节点 → 编辑快照）、新 Checkpoint、branch head 与状态同步；旧 StateNode / Delta / Checkpoint / fingerprint 不被覆盖。保持原 dependencyFingerprint，正常使下游旧 previousStateFingerprint 失效，继续既有 rebuild / convergence。没有有效节点时返回 `WM_MANUAL_EDIT_REQUIRES_STATE`。恢复 AI 管理保留当前值。
+
+总结 Prompt 来自持久化的当前 summary preset，其内容版本进入 Batch 依赖；切换 / 修改会失效旧 Batch 和索引，生成回写前复验 Prompt 与源楼。长期记忆支持 includeStale、重新启用后重入索引，以及 `/memory/resummarize-range` 从真实 FloorVariant / Delta / 结束状态构建输入，UI 无需手填 JSON。
+
+运行时读取持久化的 summaryIntervalFloors、latestForcedCount、六项检索参数和 tokenRatio / minTokenBudget / maxTokenBudget。Phase 14 / 15 保持 `result.final + 当前 scope active 最近 N 条 → Token Packer → longMemory`。`/debug/current` 返回最近准备结果、任务与召回实测诊断以及 SQLite 健康状态，缺失数据不填假值。
+
+实现位置、自动化和未执行的实机清单见 [Phase 16 验收记录](docs/phase16-acceptance.md)。只有实机清单全部通过后才能将总进度更新为“Phase 0～16 已完成”。
 
 ## 数据目录
 

@@ -16,7 +16,7 @@ class FakeStore {
   indexed = new Map<string, boolean>();
   indexedWrites = 0;
   async list(chatId: string, branchId?: string): Promise<LongMemoryRecord[]> {
-    return this.records.filter(record => !record.stale && record.chatId === chatId && (!branchId || record.branchId === branchId)).map(record => ({ ...record }));
+    return this.records.filter(record => !record.stale && record.chatId === chatId && (!branchId || record.branchId === branchId)).map(record => ({ ...record, embeddingIndexed: this.indexed.get(record.memoryId) ?? record.embeddingIndexed }));
   }
   async listEmbeddingRefs(chatId: string, branchId: string): Promise<EmbeddingRef[]> {
     const ids = new Set(this.records.filter(record => record.chatId === chatId && record.branchId === branchId).map(record => record.memoryId));

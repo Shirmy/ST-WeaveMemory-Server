@@ -1,4 +1,5 @@
 import sqlite3 from 'sqlite3';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 export type DatabaseHealth = {
   available: boolean;
@@ -9,6 +10,15 @@ export type DatabaseHealth = {
 type SqliteRunResult = sqlite3.RunResult;
 
 export class SqliteDatabase {
+  private readonly transactionContext = new AsyncLocalStorage<{ active: boolean }>();
+  private pending: Promise<void> = Promise.resolve();
+
+  private schedule<T>(work: () => Promise<T>): Promise<T> {
+    if (this.transactionContext.getStore()?.active) return work();
+    const result = this.pending.then(work);
+    this.pending = result.then(() => undefined, () => undefined);
+    return result;
+  }
   private constructor(
     private readonly database: sqlite3.Database,
     private readonly databasePath: string,
@@ -39,7 +49,7 @@ export class SqliteDatabase {
   }
 
   async health(): Promise<DatabaseHealth> {
-    await get(this.database, 'SELECT 1 AS ok');
+    await this.get('SELECT 1 AS ok');
     return {
       available: true,
       journalMode: this.journalMode,
@@ -48,8 +58,7 @@ export class SqliteDatabase {
   }
 
   async checkpoint(): Promise<void> {
-    const result = await get<{ busy: number; log: number; checkpointed: number }>(
-      this.database,
+    const result = await this.get<{ busy: number; log: number; checkpointed: number }>(
       'PRAGMA wal_checkpoint(TRUNCATE)'
     );
     if (Number(result?.busy ?? 0) !== 0) {
@@ -58,31 +67,33 @@ export class SqliteDatabase {
   }
 
   async close(): Promise<void> {
-    await close(this.database);
+    await this.schedule(() => close(this.database));
   }
 
   async run(sql: string, params: unknown[] = []): Promise<SqliteRunResult> {
-    return run(this.database, sql, params);
+    return this.schedule(() => run(this.database, sql, params));
   }
 
   async get<T>(sql: string, params: unknown[] = []): Promise<T | undefined> {
-    return get<T>(this.database, sql, params);
+    return this.schedule(() => get<T>(this.database, sql, params));
   }
 
   async all<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-    return all<T>(this.database, sql, params);
+    return this.schedule(() => all<T>(this.database, sql, params));
   }
 
   async exec(sql: string): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
+    await this.schedule(() => new Promise<void>((resolve, reject) => {
       this.database.exec(sql, error => {
         if (error) reject(error);
         else resolve();
       });
-    });
+    }));
   }
 
   async transaction<T>(work: () => Promise<T>): Promise<T> {
+    if (this.transactionContext.getStore()?.active) throw new Error('Nested SQLite transactions are not supported');
+    return this.schedule(() => this.transactionContext.run({ active: true }, async () => {
     await this.run('BEGIN IMMEDIATE');
     try {
       const result = await work();
@@ -95,7 +106,10 @@ export class SqliteDatabase {
         // Preserve the original failure. The connection will be checked on the next operation.
       }
       throw error;
+    } finally {
+      this.transactionContext.getStore()!.active = false;
     }
+    }));
   }
 }
 

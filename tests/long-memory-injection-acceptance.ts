@@ -3,6 +3,7 @@ import { MemoryRuntime } from '../src/core/runtime';
 import { emptySnapshot } from '../src/state/apply';
 import type { LongMemoryRecord } from '../src/memory/long-memory';
 import type { FusedMemory } from '../src/memory/recall';
+import { DEFAULT_RECALL_SETTINGS } from '../src/ai/types';
 
 function memory(memoryId: string, startFloor: number, endFloor: number, summary: string): LongMemoryRecord {
   return { memoryId, chatId: 'chat', branchId: 'branch', batchId: 'batch', sliceId: memoryId, startFloor, endFloor, summary, tags: [], characterIds: [], plotlineIds: [], endStateNodeId: 'node', endStateFingerprint: 'fp', bm25Indexed: true, embeddingIndexed: true, stale: false, createdAt: '2026-01-01', updatedAt: '2026-01-01', sourceFloorIds: [], batchDependencyFingerprint: 'dep', batchStartFloor: startFloor, batchEndFloor: endFloor };
@@ -28,6 +29,17 @@ async function main(): Promise<void> {
   const preparedDiagnostics = prepared.diagnostics as typeof prepared.diagnostics & { packedFixedRecentCount?: number; packedHighRelevanceCount?: number };
   assert.equal(preparedDiagnostics.packedFixedRecentCount, 2);
   assert.equal(preparedDiagnostics.packedHighRelevanceCount, 1);
+
+  const configured = new MemoryRuntime(baseStore as never, {} as never, tasks as never, chain as never, recall as never, memories as never, {
+    getLongMemorySettings: async () => ({ summaryIntervalFloors: 30, latestForcedCount: 1 }),
+    getRecallSettings: async () => ({ ...DEFAULT_RECALL_SETTINGS, finalRecallCount: 1, tokenRatio: 0.05, minTokenBudget: 100, maxTokenBudget: 300 })
+  });
+  const customized = await configured.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 4000, latestUserIndex: 0, latestUserText: 'hello' });
+  assert.equal(customized.ready, true);
+  assert.equal((customized.diagnostics as { memoryTokenLimit?: number }).memoryTokenLimit, 200);
+  assert.equal(customized.diagnostics.memoryCount, 1);
+  assert.ok(customized.longMemory.includes('recent event'), 'runtime selects active recent memory outside recall candidates');
+  assert.ok(!customized.longMemory.includes('old event'));
 
   const failing = new MemoryRuntime(baseStore as never, {} as never, tasks as never, chain as never, { recall: async () => { throw new Error('database unreadable'); } } as never, memories as never);
   const failed = await failing.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 100_000, latestUserIndex: 0, latestUserText: 'hello' });
