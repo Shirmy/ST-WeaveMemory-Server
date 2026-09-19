@@ -2,10 +2,10 @@
 
 SillyTavern 长期记忆、人物状态与剧情脉络管理插件的服务端插件。负责状态链、状态增量、Checkpoint、长期记忆、检索和数据迁移。
 
-## 当前进度（v0.1.0，Phase 0～11 已完成）
+## 当前进度（v0.1.0，Phase 0～14 已完成）
 
 - Phase 0：`/health` 版本握手、`/generation/prepare` 生成前闸门、`/floor/finalize` AI 楼登记、每聊天串行任务队列、正文 fingerprint
-- Phase 1：SQLite 持久化（`sqlite3` 5.1.7，Phase 1 验收标准为 Windows 无需手动编译依赖）、migration runner（当前数据库 schema 版本 3）、WAL、事务封装、启动时每日备份与 migration 前备份（最多保留 5 份）
+- Phase 1：SQLite 持久化（`sqlite3` 5.1.7，Phase 1 验收标准为 Windows 无需手动编译依赖）、migration runner、WAL、事务封装、启动时每日备份与 migration 前备份（最多保留 5 份）
 - Phase 2：FloorVariant / swipe 身份、`/chat/reconcile`、active floor 集合、stale 标记、内部 branchId、`/branch/create`、`/branch/activate`、`/host-chat/bind`（SillyTavern 原生 Branch 绑定与重启恢复）
 - Phase 3：谱 / 迹 / 事 TypeScript 类型、JSON Schema、运行时 Validator / Normalizer、lockedPaths、手动编辑协议、候选状态（Deep Partial）协议（`src/state/schema.ts`，状态协议版本 1）
 - Phase 4：AI 渠道（OpenAI 兼容协议，API Key 本地加密存储）、四类模型角色绑定、Prompt 预设与 promptVersion、状态分析任务（重试 / 超时 / 取消 / 回写前按 dependencyFingerprint 复验楼层、前态与 Prompt / 重启恢复）、`/ai/*` 与 `/state/tasks*` 接口（`src/ai/`、`src/storage/ai-config-store.ts`、`src/storage/state-task-store.ts`）
@@ -18,8 +18,9 @@ SillyTavern 长期记忆、人物状态与剧情脉络管理插件的服务端�
 - Phase 11：BM25 长期记忆召回。对当前 `chatId + branchId` 的 active 长期记忆建立独立本地索引；支持中文 unigram / bigram 和拉丁词元；title、summary、tags、人物、剧情线采用字段权重；stale 长期记忆自动移出索引；不同聊天与分支完全隔离；提供 `/memory/search`（`src/memory/bm25.ts`）。
 - Phase 12：Embedding 向量召回。向量模型使用已配置的 embedding 渠道与模型；向量保存于 SQLite，同时绑定内容指纹与 Embedding 渠道 / 模型配置指纹（apiType、规范化 baseUrl、排序后的非凭证 headers、model；API Key 不参与），正文、模型或影响向量空间的渠道配置变化时自动重新生成，仅轮换 API Key 不会重建；单条生成失败不会阻塞其它记忆；支持 stale 清理、索引重建、`/memory/vector-search` 和 `/memory/vector-rebuild`（`src/memory/embedding.ts`）。
 - Phase 13：RRF 融合与可选重排。BM25 与 Embedding 各自独立召回后按 RRF（score = Σ 1 / (k + rank)，默认 k = 60）合并；重排模型默认关闭，开启后使用已配置的 rerank 渠道与模型对前 N 个候选（默认 20）重打分，候选数不超过最终条数时跳过请求；任一路召回失败另一路继续，重排失败或返回无效分数时回退到 RRF 顺序，两路都失败才报错；召回参数（bm25TopK、embeddingTopK、rrfK、rerankEnabled、rerankCandidateLimit、finalRecallCount）由服务端持久化并通过 `/ai/settings` 读写；提供 `POST /recall/debug` 返回 query、两路候选、RRF、重排状态与最终候选（`src/memory/recall.ts`）。
+- Phase 14：Token Packer。以 Phase 13 的 `result.final` 作为 Recall 输入；从当前 `chatId + branchId` 的 active 长期记忆中固定最近记忆，再按最终召回顺序补充高相关记忆；按 `memoryId` 去重，固定记忆优先；总数受 `maxMemoryCount` 与动态 Token 预算共同限制；中日韩文本使用更保守的 Token 估算；当前状态 Token 仅用于 diagnostics，不占长期记忆独立预算（`src/memory/token-packer.ts`）。
 
-尚未实现：Phase 14 及之后阶段；Token 打包与长期记忆注入仍未接入，`longMemory` 保持为空；「跟随 SillyTavern」渠道模式延后。
+尚未实现：Phase 15 及之后阶段；长期记忆注入仍未接入，`longMemory` 保持为空；「跟随 SillyTavern」渠道模式延后。
 
 ## 数据目录
 
@@ -56,6 +57,9 @@ npm run test:recent-context
 npm run test:long-memory
 npm run test:long-memory-scheduler
 npm run test:bm25
+npm run test:embedding
+npm run test:recall
+npm run test:token-packer
 ```
 
 `test:state-chain-1000` 会通过 mock 模型把 1000 个楼层真实写入 SQLite 再做恢复验证，运行约 40 秒。

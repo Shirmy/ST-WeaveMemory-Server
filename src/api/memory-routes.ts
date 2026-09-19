@@ -59,11 +59,17 @@ export function registerMemoryRoutes(router: Router, deps: MemoryRouteDependenci
     const body = bodyObject(req);
     const options = body.options && typeof body.options === 'object' && !Array.isArray(body.options) ? recallOptions(body.options as Record<string, unknown>) : {};
     const result = await deps.recall.recall(requiredString(body.chatId, 'chatId'), requiredString(body.branchId, 'branchId'), requiredString(body.query, 'query'), options);
-    const packCandidates = result.rerank.status === 'applied' ? result.rerank.candidates : result.rrf;
-    const pack = packMemories(packCandidates, {
+    const chatId = requiredString(body.chatId, 'chatId');
+    const branchId = requiredString(body.branchId, 'branchId');
+    const fixedRecentCount = typeof body.fixedRecentCount === 'number' ? body.fixedRecentCount : undefined;
+    const activeMemories = await deps.store.list(chatId, branchId);
+    const fixedRecentMemories = activeMemories
+      .sort((left, right) => right.endFloor - left.endFloor || right.startFloor - left.startFloor || left.memoryId.localeCompare(right.memoryId))
+      .slice(0, Number.isSafeInteger(fixedRecentCount) && (fixedRecentCount as number) >= 0 ? fixedRecentCount : 2);
+    const pack = packMemories({ recallCandidates: result.final, fixedRecentMemories }, {
       contextWindow: typeof body.contextWindow === 'number' ? body.contextWindow : 0,
       maxMemoryCount: typeof body.maxMemoryCount === 'number' ? body.maxMemoryCount : undefined,
-      fixedRecentCount: typeof body.fixedRecentCount === 'number' ? body.fixedRecentCount : undefined,
+      fixedRecentCount,
       tokenLimit: typeof body.tokenLimit === 'number' ? body.tokenLimit : undefined,
       currentState: typeof body.currentState === 'string' ? body.currentState : undefined
     });

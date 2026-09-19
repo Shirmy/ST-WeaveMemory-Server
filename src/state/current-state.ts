@@ -75,7 +75,14 @@ export function renderCurrentState(input: CurrentStateInput): CurrentStateResult
 // from prose or add a second model call. A future schema can extend this selector explicitly.
 
 export function estimateTokens(text: string): number {
-  return text ? Math.max(1, Math.ceil(text.length / 4)) : 0;
+  if (!text) return 0;
+  let cjk = 0;
+  let other = 0;
+  for (const char of Array.from(text)) {
+    if (/\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}/u.test(char)) cjk += 1;
+    else other += 1;
+  }
+  return Math.max(1, cjk + Math.ceil(other / 4));
 }
 
 function renderProfiles(profiles: CharacterProfile[], suppressed: WeaveSuppression[]): string {
