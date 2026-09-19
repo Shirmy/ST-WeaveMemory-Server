@@ -29,16 +29,23 @@ export function renderCurrentState(input: CurrentStateInput): CurrentStateResult
   }
   const story = snapshot.story;
   const relatedPlotlines = new Set<string>();
+  const addCharacters = (ids: string[] | undefined): void => {
+    for (const id of ids ?? []) if (snapshot.profiles[id]) relatedCharacters.add(id);
+  };
   for (const item of [...story.now.ongoing, ...story.now.upcoming]) {
-    if (item.relatedCharacterIds?.some(id => relatedCharacters.has(id))) item.relatedPlotlineIds?.forEach(id => relatedPlotlines.add(id));
+    addCharacters(item.relatedCharacterIds);
+    for (const id of item.relatedPlotlineIds ?? []) if (story.plotlines.some(plotline => plotline.id === id)) relatedPlotlines.add(id);
   }
   for (const plotline of story.plotlines) {
-    if (plotline.pinned || (!plotline.stalled && plotline.stage !== '淡出' && plotline.relatedCharacterIds?.some(id => relatedCharacters.has(id)))) relatedPlotlines.add(plotline.id);
+    const active = plotline.pinned === true || (plotline.stalled !== true && plotline.stage !== '淡出');
+    if (!active) continue;
+    addCharacters(plotline.relatedCharacterIds);
+    if (plotline.relatedCharacterIds?.some(id => snapshot.profiles[id])) relatedPlotlines.add(plotline.id);
   }
 
   const selectedProfiles = profiles.filter(profile => relatedCharacters.has(profile.characterId));
   const selectedTraces = selectedProfiles.map(profile => traces[profile.characterId]).filter((trace): trace is CharacterTrace => Boolean(trace));
-  const selectedPlotlines = story.plotlines.filter(plotline => relatedPlotlines.has(plotline.id) && plotline.stage !== '淡出');
+  const selectedPlotlines = story.plotlines.filter(plotline => relatedPlotlines.has(plotline.id));
   const selectedPlans = story.plotPlans.filter(plan => plan.status === 'planned' || plan.status === 'triggered')
     .filter(plan => plan.pinned || plan.relatedCharacterIds?.some(id => relatedCharacters.has(id)) || plan.relatedPlotlineIds?.some(id => relatedPlotlines.has(id)));
   const calendar = selectCalendar(story.calendar, story.now.currentTime, relatedCharacters);
@@ -56,6 +63,10 @@ export function renderCurrentState(input: CurrentStateInput): CurrentStateResult
   const text = sections.filter(Boolean).join('\n\n');
   return { text, characterIds: [...relatedCharacters], plotlineIds: [...relatedPlotlines], tokens: estimateTokens(text) };
 }
+
+// Phase 8 only uses structured now/plotline relationships for scene membership. There is no
+// reliable scene-participant field in the current schema, so we deliberately do not infer people
+// from prose or add a second model call. A future schema can extend this selector explicitly.
 
 export function estimateTokens(text: string): number {
   return text ? Math.max(1, Math.ceil(text.length / 4)) : 0;

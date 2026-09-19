@@ -1,35 +1,69 @@
 import assert from 'node:assert/strict';
 import { emptySnapshot } from '../src/state/apply';
 import { renderCurrentState } from '../src/state/current-state';
+import { MemoryRuntime } from '../src/core/runtime';
+import type { StateChainEngine } from '../src/state/chain-engine';
+import type { MemoryStore } from '../src/storage/types';
+import type { PerChatQueue } from '../src/queue/per-chat-queue';
+import type { StateTaskRunner } from '../src/ai/state-task-runner';
+import type { CharacterProfile } from '../src/state/schema';
 
 const source = { branchId: 'branch:test', sourceFloorIds: ['floor-1'], sourceHostChatIds: ['chat'] };
 
+function profile(characterId: string, canonicalName = characterId): CharacterProfile {
+  return { characterId, canonicalName, aliases: [], basic: {}, appearance: {}, identity: {}, personality: {}, lifeDetails: [], lockedPaths: [], sourcePriority: {}, source, updatedAt: '2026-01-01' };
+}
+
 async function main(): Promise<void> {
   const snapshot = emptySnapshot('branch:test');
-  snapshot.profiles.alice = {
-    characterId: 'alice', canonicalName: 'Alice', aliases: ['爱丽丝'], basic: { age: '20' }, appearance: {}, identity: { occupation: '探员' }, personality: { coreTraits: ['冷静'] }, lifeDetails: [], lockedPaths: [], sourcePriority: {}, source, updatedAt: '2026-01-01'
-  };
-  snapshot.profiles.bob = { ...snapshot.profiles.alice, characterId: 'bob', canonicalName: 'Bob', aliases: [], identity: {}, personality: {} };
-  snapshot.profiles.carol = { ...snapshot.profiles.alice, characterId: 'carol', canonicalName: 'Carol', aliases: [] };
-  snapshot.traces.alice = { characterId: 'alice', longTermTendencies: [], currentSituations: [{ id: 's', text: '在车站' }], visibility: [], affinity: { inner: 1, outer: 0 }, source, updatedAt: '2026-01-01' };
-  snapshot.traces.bob = { ...snapshot.traces.alice, characterId: 'bob' };
+  for (let index = 0; index < 50; index += 1) {
+    const id = ['alice', 'bob', 'carol', 'old', 'pinned'][index] ?? `unrelated-${index}`;
+    snapshot.profiles[id] = profile(id, id[0].toUpperCase() + id.slice(1));
+    snapshot.traces[id] = { characterId: id, longTermTendencies: [], currentSituations: [], visibility: [], affinity: { inner: 0, outer: 0 }, source, updatedAt: '2026-01-01' };
+  }
   snapshot.story.now.currentTime = '2026-01-10';
-  snapshot.story.now.ongoing = [{ id: 'o', title: '车站调查', relatedCharacterIds: ['alice'], relatedPlotlineIds: ['p'] }];
+  snapshot.story.now.ongoing = [{ id: 'ongoing', title: '车站调查', relatedCharacterIds: ['bob'], relatedPlotlineIds: ['active-plot'] }];
+  snapshot.story.now.upcoming = [{ id: 'upcoming', title: '夜间会面', relatedCharacterIds: ['bob'] }];
   snapshot.story.calendar = [
     { id: 'near', dateKey: '2026-01-11', type: 'story', title: '明日会面', confirmed: true },
-    { id: 'far', dateKey: '2026-02-01', type: 'story', title: '远期事件', confirmed: true }
+    { id: 'far', dateKey: '2026-02-01', type: 'story', title: '远期事件', confirmed: true },
+    { id: 'unconfirmed', dateKey: '2026-01-10', type: 'story', title: '未确认事项', confirmed: false }
   ];
-  snapshot.story.plotlines = [{ id: 'p', name: '调查线', stage: '延展', currentState: '追查中', relatedCharacterIds: ['alice'], updatedAt: '2026-01-01' }];
-  snapshot.story.plotPlans = [{ id: 'plan', type: '暗线', title: '夜间跟踪', time: '未来', status: 'planned', relatedPlotlineIds: ['p'], createdAt: '2026-01-01', updatedAt: '2026-01-01' }];
+  snapshot.story.plotlines = [
+    { id: 'active-plot', name: '调查线', stage: '延展', currentState: '追查中', relatedCharacterIds: ['carol'], updatedAt: '2026-01-01' },
+    { id: 'faded-plot', name: '旧线', stage: '淡出', currentState: '结束', relatedCharacterIds: ['old'], updatedAt: '2026-01-01' },
+    { id: 'pinned-faded', name: '钉住旧线', stage: '淡出', currentState: '仍需收尾', pinned: true, relatedCharacterIds: ['pinned'], updatedAt: '2026-01-01' },
+    { id: 'stalled-plot', name: '停滞旧线', stage: '延展', currentState: '暂停', stalled: true, relatedCharacterIds: ['old'], updatedAt: '2026-01-01' }
+  ];
+  snapshot.story.plotPlans = [{ id: 'plan', type: '暗线', title: '夜间跟踪', time: '未来', status: 'planned', relatedPlotlineIds: ['active-plot'], createdAt: '2026-01-01', updatedAt: '2026-01-01' }];
 
-  const result = renderCurrentState({ snapshot, userText: '爱丽丝，今晚去车站。', recentFloorTexts: ['Bob 在门口等待。'], recentPositions: [] });
-  assert.match(result.text, /Alice/);
-  assert.match(result.text, /Bob/);
-  assert.doesNotMatch(result.text, /Carol/);
-  assert.match(result.text, /明日会面/);
-  assert.doesNotMatch(result.text, /远期事件/);
-  assert.match(result.text, /以下为未来规划，不代表已经发生/);
-  assert.equal(result.tokens > 0, true);
+  const rendered = renderCurrentState({ snapshot, userText: 'Alice，我们继续调查。', recentFloorTexts: [], recentPositions: [] });
+  assert.deepEqual(new Set(rendered.characterIds), new Set(['alice', 'bob', 'carol', 'pinned']));
+  assert.equal(rendered.text.includes('Alice'), true);
+  assert.equal(rendered.text.includes('Bob'), true);
+  assert.equal(rendered.text.includes('Carol'), true);
+  assert.equal(rendered.text.includes('Pinned'), true);
+  assert.equal(rendered.text.includes('Unrelated-49'), false);
+  assert.equal(rendered.text.includes('Old'), false);
+  assert.equal(rendered.text.includes('远期事件'), false);
+  assert.equal(rendered.text.includes('未确认事项'), false);
+  assert.equal(rendered.text.includes('以下为未来规划，不代表已经发生'), true);
+  assert.equal(rendered.tokens > 0, true);
+
+  const chain = {
+    trustedPrefix: async () => ({ chatId: 'chat', branchId: 'branch:test', promptVersion: 'p', positions: [], firstInvalidIndex: null, firstLineageBreakIndex: null, head: null, lineageHead: null, nodes: [] }),
+    snapshotAtFloor: async () => null,
+    current: async () => ({ snapshot })
+  };
+  const runtime = new MemoryRuntime(
+    { getOrCreateActiveBranch: async () => 'branch:test', getFloor: async () => null } as unknown as MemoryStore,
+    {} as unknown as PerChatQueue,
+    { listTasks: async () => [] } as unknown as StateTaskRunner,
+    chain as unknown as StateChainEngine
+  );
+  const prepared = await runtime.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 0, latestUserIndex: 2, latestUserText: 'Alice，我们继续调查。' });
+  assert.equal(prepared.ready, true);
+  assert.equal(prepared.diagnostics.stateTokens, rendered.tokens);
   console.log('current state acceptance passed');
 }
 
