@@ -5,7 +5,7 @@ import { SqliteDatabase } from './sqlite-database';
 
 type Migration = { version: number; name: string; sql: string };
 
-const migrations: Migration[] = [{
+export const migrations: Migration[] = [{
   version: 1,
   name: 'initial-schema',
   sql: `
@@ -388,6 +388,16 @@ SET stale = CASE
   WHEN batch_id IN (SELECT batch_id FROM long_memory_batches WHERE stale = 0) THEN 0
   ELSE 1
 END;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_long_memory_active_batch_range
+  ON long_memory_batches(chat_id, branch_id, batch_start_floor, batch_end_floor)
+  WHERE stale = 0;
+`
+}, {
+  version: 11,
+  name: 'repair-long-memory-active-state-safely',
+  sql: `
+UPDATE long_memory_batches SET stale = 1;
+UPDATE long_memories SET stale = 1;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_long_memory_active_batch_range
   ON long_memory_batches(chat_id, branch_id, batch_start_floor, batch_end_floor)
   WHERE stale = 0;

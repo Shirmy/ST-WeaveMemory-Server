@@ -39,6 +39,11 @@ export class LongMemoryStore {
     return rows.map(row => ({ batchId: row.batch_id, chatId: row.chat_id, branchId: row.branch_id, batchStartFloor: row.batch_start_floor, batchEndFloor: row.batch_end_floor, sourceFloorIds: JSON.parse(row.source_floor_ids || '[]') as string[], batchDependencyFingerprint: row.batch_dependency_fingerprint, endStateNodeId: row.end_state_node_id, endStateFingerprint: row.end_state_fingerprint, stale: row.stale === 1, createdAt: row.created_at, updatedAt: row.updated_at }));
   }
 
+  async listScopes(): Promise<Array<{ chatId: string; branchId: string }>> {
+    const rows = await this.database.all<{ chat_id: string; branch_id: string }>('SELECT DISTINCT chat_id, branch_id FROM long_memory_batches ORDER BY chat_id, branch_id');
+    return rows.map(row => ({ chatId: row.chat_id, branchId: row.branch_id }));
+  }
+
   async listByBatch(batchId: string): Promise<LongMemoryRecord[]> {
     const rows = await this.database.all<Row>('SELECT * FROM long_memories WHERE batch_id = ? ORDER BY start_floor ASC, slice_id ASC', [batchId]);
     return Promise.all(rows.map(async row => record(row, (await this.database.all<{ tag: string }>('SELECT tag FROM memory_tags WHERE memory_id = ?', [row.memory_id])).map(item => item.tag), (await this.database.all<{ character_id: string }>('SELECT character_id FROM memory_characters WHERE memory_id = ?', [row.memory_id])).map(item => item.character_id), (await this.database.all<{ plotline_id: string }>('SELECT plotline_id FROM memory_plotlines WHERE memory_id = ?', [row.memory_id])).map(item => item.plotline_id))));

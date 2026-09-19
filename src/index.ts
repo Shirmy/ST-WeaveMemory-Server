@@ -79,6 +79,12 @@ export async function init(router: Router): Promise<void> {
   registerStateRoutes(router, { stateTasks: runner, chain, store });
   registerMemoryRoutes(router, { generator: longMemoryGenerator, store: longMemoryStore });
   await runner.resumePending();
+  void longMemoryStore.listScopes().then(async scopes => {
+    for (const scope of scopes) {
+      try { await longMemoryScheduler?.reconcile(scope); }
+      catch (error) { console.error('[WeaveMemory] long-memory startup reconciliation failed', scope.chatId, scope.branchId, error); }
+    }
+  }).catch(error => console.error('[WeaveMemory] long-memory scope discovery failed', error));
   console.log('[WeaveMemory] server v0.1.0 loaded');
 }
 

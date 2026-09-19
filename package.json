@@ -28,7 +28,8 @@
     "test:external-mapping": "tsc -p tsconfig.test.json && node .test-dist/tests/external-mapping-acceptance.js",
     "test:long-memory": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-acceptance.js",
     "test:long-memory-scheduler": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-scheduler-acceptance.js",
-    "test:long-memory-migration": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-migration-acceptance.js"
+    "test:long-memory-migration": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-migration-acceptance.js",
+    "test:long-memory-recovery": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-recovery-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",

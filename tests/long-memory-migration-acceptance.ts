@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureStorageDirectories, resolveStoragePaths } from '../src/storage/data-directory';
-import { runMigrations } from '../src/storage/migrations';
+import { migrations, runMigrations } from '../src/storage/migrations';
 import { SqliteDatabase } from '../src/storage/sqlite-database';
 
 const dataRootGlobal = globalThis as typeof globalThis & { DATA_ROOT?: string };
@@ -18,8 +18,6 @@ async function main(): Promise<void> {
     await runMigrations(database, paths);
 
     await database.exec('DROP INDEX IF EXISTS uq_long_memory_active_batch_range');
-    await database.run('DELETE FROM migrations WHERE version >= 9');
-    await database.run('PRAGMA user_version = 8');
 
     const insertBatch = async (batchId: string, start: number, end: number, createdAt: string, updatedAt: string): Promise<void> => {
       await database.run(`INSERT INTO long_memory_batches(batch_id, chat_id, branch_id, batch_start_floor, batch_end_floor, source_floor_ids, batch_dependency_fingerprint, end_state_node_id, end_state_fingerprint, stale, created_at, updated_at) VALUES (?, 'chat', 'branch', ?, ?, '[]', ?, ?, ?, 0, ?, ?)`, [batchId, start, end, `dep-${batchId}`, `node-${batchId}`, `state-${batchId}`, createdAt, updatedAt]);
@@ -32,7 +30,9 @@ async function main(): Promise<void> {
     await insertBatch('TIE-A', 31, 60, '2026-01-01T11:00:00.000Z', '2026-01-01T11:00:00.000Z');
     await insertBatch('TIE-B', 31, 60, '2026-01-01T11:00:00.000Z', '2026-01-01T11:00:00.000Z');
 
-    await runMigrations(database, paths);
+    const migration9 = migrations.find(item => item.version === 9);
+    assert.ok(migration9);
+    await database.exec(migration9.sql);
 
     const batches = await database.all<{ batch_id: string; stale: number }>('SELECT batch_id, stale FROM long_memory_batches ORDER BY rowid');
     const stale = new Map(batches.map(item => [item.batch_id, item.stale]));
@@ -53,8 +53,16 @@ async function main(): Promise<void> {
     await assert.rejects(database.run(`INSERT INTO long_memory_batches(batch_id, chat_id, branch_id, batch_start_floor, batch_end_floor, source_floor_ids, batch_dependency_fingerprint, end_state_node_id, end_state_fingerprint, stale, created_at, updated_at) VALUES ('ACTIVE-DUP', 'chat', 'branch', 1, 30, '[]', 'dep', 'node', 'state', 0, '2026-01-01', '2026-01-01')`));
     await database.run(`INSERT INTO long_memory_batches(batch_id, chat_id, branch_id, batch_start_floor, batch_end_floor, source_floor_ids, batch_dependency_fingerprint, end_state_node_id, end_state_fingerprint, stale, created_at, updated_at) VALUES ('STALE-HISTORY', 'chat', 'branch', 1, 30, '[]', 'dep', 'node', 'state', 1, '2026-01-01', '2026-01-01')`);
 
+    const migration11 = migrations.find(item => item.version === 11);
+    assert.ok(migration11);
+    await database.exec(migration11.sql);
+    const activeAfterSafetyRepair = await database.get<{ count: number }>('SELECT COUNT(*) AS count FROM long_memory_batches WHERE stale = 0');
+    const activeSlicesAfterSafetyRepair = await database.get<{ count: number }>('SELECT COUNT(*) AS count FROM long_memories WHERE stale = 0');
+    assert.equal(activeAfterSafetyRepair?.count, 0, 'migration 11 must not reactivate historical batches');
+    assert.equal(activeSlicesAfterSafetyRepair?.count, 0, 'migration 11 must leave every slice stale');
+
     const version = await database.get<{ user_version: number }>('PRAGMA user_version');
-    assert.equal(version?.user_version, 10);
+    assert.equal(version?.user_version, 11);
     await database.close();
     console.log('long memory migration acceptance passed');
   } finally {

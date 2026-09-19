@@ -34,4 +34,8 @@ export class LongMemoryScheduler {
       await this.deps.generator.generate({ chatId: input.chatId, branchId: input.branchId, batchStartFloor: nextStart, batchEndFloor: endOrdinal, floors, stateDeltas: deltas, endStateDigest: { stateNodeId: endNode.stateNodeId, stateFingerprint: endNode.stateFingerprint ?? '' } });
     }
   }
+
+  async reconcile(input: LongMemoryCommit): Promise<void> {
+    await this.onStateCommitted(input);
+  }
 }
