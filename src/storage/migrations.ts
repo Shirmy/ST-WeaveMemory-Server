@@ -402,6 +402,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_long_memory_active_batch_range
   ON long_memory_batches(chat_id, branch_id, batch_start_floor, batch_end_floor)
   WHERE stale = 0;
 `
+}, {
+  version: 12,
+  name: 'embedding-content-fingerprint',
+  sql: `
+ALTER TABLE embedding_refs ADD COLUMN content_fingerprint TEXT NOT NULL DEFAULT '';
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

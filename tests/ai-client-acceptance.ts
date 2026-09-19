@@ -159,6 +159,7 @@ async function main(): Promise<void> {
     completions.push((_req, _body, res) => json(res, 200, { choices: [{ message: { content: '' }, finish_reason: 'length' }] }));
     assert.match((await client.testModel(channel, 'reasoner', 'summary', 2000)).detail, /reachable/);
     assert.equal((await client.testModel(channel, 'embed', 'embedding', 2000)).detail, 'dimensions=3');
+    assert.deepEqual((await client.createEmbedding(channel, 'embed', 'hello', 2000)).vector, [0.1, 0.2, 0.3]);
     assert.equal((await client.testModel(channel, 'rerank', 'rerank', 2000)).detail, 'results=1');
     assert.equal(completions.length, 0);
     console.log('Phase 4 AI client acceptance passed');

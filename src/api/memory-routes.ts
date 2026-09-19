@@ -3,9 +3,10 @@ import type { Router } from 'express';
 import { LongMemoryGenerator, type LongMemoryBatchInput } from '../memory/long-memory';
 import { LongMemoryStore } from '../storage/long-memory-store';
 import { Bm25SearchService } from '../memory/bm25';
+import { EmbeddingSearchService } from '../memory/embedding';
 import { bodyObject, optionalString, requiredString, wrapRoute } from './request-utils';
 
-export type MemoryRouteDependencies = { generator: LongMemoryGenerator; store: LongMemoryStore; bm25: Bm25SearchService };
+export type MemoryRouteDependencies = { generator: LongMemoryGenerator; store: LongMemoryStore; bm25: Bm25SearchService; embedding: EmbeddingSearchService };
 
 export function registerMemoryRoutes(router: Router, deps: MemoryRouteDependencies): void {
   const json = bodyParser.json({ limit: '4mb' });
@@ -20,6 +21,18 @@ export function registerMemoryRoutes(router: Router, deps: MemoryRouteDependenci
     const rawTopK = Number(req.query.topK ?? 10);
     const topK = Number.isSafeInteger(rawTopK) ? Math.min(50, Math.max(1, rawTopK)) : 10;
     return { query, candidates: await deps.bm25.search(chatId, branchId, query, topK) };
+  }));
+  router.get('/memory/vector-search', wrapRoute(async req => {
+    const chatId = requiredString(req.query.chatId, 'chatId');
+    const branchId = requiredString(req.query.branchId, 'branchId');
+    const query = requiredString(req.query.query, 'query');
+    const rawTopK = Number(req.query.topK ?? 10);
+    const topK = Number.isSafeInteger(rawTopK) ? Math.min(50, Math.max(1, rawTopK)) : 10;
+    return { query, candidates: await deps.embedding.search(chatId, branchId, query, topK) };
+  }));
+  router.post('/memory/vector-rebuild', json, wrapRoute(async req => {
+    const body = bodyObject(req);
+    return deps.embedding.rebuild(requiredString(body.chatId, 'chatId'), requiredString(body.branchId, 'branchId'));
   }));
   router.post('/memory/resummarize', json, wrapRoute(async req => {
     const body = bodyObject(req);

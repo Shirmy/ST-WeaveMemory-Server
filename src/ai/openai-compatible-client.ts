@@ -38,6 +38,8 @@ export type ChatCompletionResult = {
   durationMs: number;
 };
 
+export type EmbeddingResult = { vector: number[]; model: string | null; durationMs: number };
+
 export type ModelTestResult = { ok: true; role: AiRole; model: string; detail: string; durationMs: number };
 
 type RequestInitLite = { method: 'GET' | 'POST'; body?: string };
@@ -119,6 +121,17 @@ export class OpenAiCompatibleClient {
       .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
       .map(id => id.trim());
     return [...new Set(ids)].sort();
+  }
+
+  async createEmbedding(channel: ChannelEndpoint, model: string, input: string, timeoutMs: number, signal?: AbortSignal): Promise<EmbeddingResult> {
+    const startedAt = Date.now();
+    const data = asRecord(await this.requestJson(channel, 'embeddings', { method: 'POST', body: JSON.stringify({ model, input }) }, timeoutMs, signal));
+    const first = asRecord((Array.isArray(data.data) ? data.data : [])[0]);
+    const vector = Array.isArray(first.embedding) ? first.embedding.filter((value): value is number => typeof value === 'number' && Number.isFinite(value)) : [];
+    if (!vector.length || vector.length !== (Array.isArray(first.embedding) ? first.embedding.length : 0)) {
+      throw new AiRequestError('WM_INVALID_RESPONSE', 'embedding response contains an invalid vector', false);
+    }
+    return { vector, model: typeof data.model === 'string' ? data.model : null, durationMs: Date.now() - startedAt };
   }
 
   async testModel(channel: ChannelEndpoint, model: string, role: AiRole, timeoutMs: number, signal?: AbortSignal): Promise<ModelTestResult> {

@@ -3,6 +3,7 @@ import type { LongMemoryBatch, LongMemoryRecord } from '../memory/long-memory';
 
 type Row = { memory_id: string; chat_id: string; branch_id: string; batch_id: string; slice_id: string; start_floor: number; end_floor: number; batch_start_floor: number; batch_end_floor: number; title: string | null; summary: string; narrative_time: string | null; end_state_node_id: string; end_state_fingerprint: string; batch_dependency_fingerprint: string; source_floor_ids: string; bm25_indexed: number; embedding_indexed: number; stale: number; created_at: string; updated_at: string };
 type BatchRow = { batch_id: string; chat_id: string; branch_id: string; batch_start_floor: number; batch_end_floor: number; source_floor_ids: string; batch_dependency_fingerprint: string; end_state_node_id: string; end_state_fingerprint: string; stale: number; created_at: string; updated_at: string };
+export type EmbeddingRef = { memoryId: string; provider: string; model: string; contentFingerprint: string; vector: number[]; updatedAt: string };
 
 function record(row: Row, tags: string[], characterIds: string[], plotlineIds: string[]): LongMemoryRecord {
   return { memoryId: row.memory_id, chatId: row.chat_id, branchId: row.branch_id, batchId: row.batch_id, sliceId: row.slice_id, startFloor: row.start_floor, endFloor: row.end_floor, batchStartFloor: row.batch_start_floor, batchEndFloor: row.batch_end_floor, ...(row.title ? { title: row.title } : {}), summary: row.summary, tags, characterIds, plotlineIds, ...(row.narrative_time ? { narrativeTime: row.narrative_time } : {}), sourceFloorIds: JSON.parse(row.source_floor_ids || '[]') as string[], batchDependencyFingerprint: row.batch_dependency_fingerprint, endStateNodeId: row.end_state_node_id, endStateFingerprint: row.end_state_fingerprint, bm25Indexed: row.bm25_indexed === 1, embeddingIndexed: row.embedding_indexed === 1, stale: row.stale === 1, createdAt: row.created_at, updatedAt: row.updated_at };
@@ -19,6 +20,27 @@ export class LongMemoryStore {
   async setBm25Indexed(memoryIds: string[], indexed: boolean): Promise<void> {
     if (!memoryIds.length) return;
     await this.database.run(`UPDATE long_memories SET bm25_indexed = ? WHERE memory_id IN (${memoryIds.map(() => '?').join(',')})`, [indexed ? 1 : 0, ...memoryIds]);
+  }
+
+  async resetEmbeddingIndexed(): Promise<void> { await this.database.run('UPDATE long_memories SET embedding_indexed = 0 WHERE embedding_indexed != 0'); }
+
+  async listEmbeddingRefs(chatId: string, branchId: string): Promise<EmbeddingRef[]> {
+    const rows = await this.database.all<{ memory_id: string; provider: string; model: string; content_fingerprint: string; vector_json: string; updated_at: string }>(`SELECT e.* FROM embedding_refs e JOIN long_memories m ON m.memory_id = e.memory_id WHERE m.chat_id = ? AND m.branch_id = ?`, [chatId, branchId]);
+    return rows.flatMap(row => { try { const vector = JSON.parse(row.vector_json) as unknown; return Array.isArray(vector) && vector.every(value => typeof value === 'number' && Number.isFinite(value)) ? [{ memoryId: row.memory_id, provider: row.provider, model: row.model, contentFingerprint: row.content_fingerprint, vector, updatedAt: row.updated_at }] : []; } catch { return []; } });
+  }
+
+  async saveEmbeddingRef(ref: EmbeddingRef): Promise<void> {
+    await this.database.run(`INSERT INTO embedding_refs(memory_id, provider, model, vector_json, updated_at, content_fingerprint) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(memory_id) DO UPDATE SET provider = excluded.provider, model = excluded.model, vector_json = excluded.vector_json, updated_at = excluded.updated_at, content_fingerprint = excluded.content_fingerprint`, [ref.memoryId, ref.provider, ref.model, JSON.stringify(ref.vector), ref.updatedAt, ref.contentFingerprint]);
+  }
+
+  async deleteEmbeddingRefs(memoryIds: string[]): Promise<void> {
+    if (!memoryIds.length) return;
+    await this.database.run(`DELETE FROM embedding_refs WHERE memory_id IN (${memoryIds.map(() => '?').join(',')})`, memoryIds);
+  }
+
+  async setEmbeddingIndexed(memoryIds: string[], indexed: boolean): Promise<void> {
+    if (!memoryIds.length) return;
+    await this.database.run(`UPDATE long_memories SET embedding_indexed = ? WHERE memory_id IN (${memoryIds.map(() => '?').join(',')})`, [indexed ? 1 : 0, ...memoryIds]);
   }
 
   async insertBatch(records: LongMemoryRecord[], batch: LongMemoryBatch): Promise<void> {

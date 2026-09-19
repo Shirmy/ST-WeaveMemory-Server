@@ -21,6 +21,7 @@ import { LongMemoryStore } from './storage/long-memory-store';
 import { LongMemoryGenerator } from './memory/long-memory';
 import { LongMemoryScheduler } from './memory/long-memory-scheduler';
 import { Bm25SearchService } from './memory/bm25';
+import { EmbeddingSearchService } from './memory/embedding';
 
 interface PluginInfo { id: string; name: string; description: string; }
 interface Plugin { init: (router: Router) => Promise<void>; exit: () => Promise<void>; info: PluginInfo; }
@@ -73,14 +74,16 @@ export async function init(router: Router): Promise<void> {
   stateTasks = runner;
   longMemoryStore = new LongMemoryStore(openedDatabase);
   await longMemoryStore.resetBm25Indexed();
+  await longMemoryStore.resetEmbeddingIndexed();
   const longMemoryGenerator = new LongMemoryGenerator({ aiConfig, client, store: longMemoryStore });
   const bm25 = new Bm25SearchService(longMemoryStore);
+  const embedding = new EmbeddingSearchService(longMemoryStore, aiConfig, client);
   longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator, getSummaryIntervalFloors: async () => (await aiConfig.getLongMemorySettings()).summaryIntervalFloors });
   const activeRuntime = new MemoryRuntime(store, queue, runner, chain);
   registerRoutes(router, activeRuntime, openedDatabase);
   registerAiRoutes(router, { aiConfig, client, stateTasks: runner });
   registerStateRoutes(router, { stateTasks: runner, chain, store });
-  registerMemoryRoutes(router, { generator: longMemoryGenerator, store: longMemoryStore, bm25 });
+  registerMemoryRoutes(router, { generator: longMemoryGenerator, store: longMemoryStore, bm25, embedding });
   await runner.resumePending();
   void longMemoryStore.listScopes().then(async scopes => {
     for (const scope of scopes) {

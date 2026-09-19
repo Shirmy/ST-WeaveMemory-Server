@@ -30,7 +30,8 @@
     "test:long-memory-scheduler": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-scheduler-acceptance.js",
     "test:long-memory-migration": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-migration-acceptance.js",
     "test:long-memory-recovery": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-recovery-acceptance.js",
-    "test:bm25": "tsc -p tsconfig.test.json && node .test-dist/tests/bm25-acceptance.js"
+    "test:bm25": "tsc -p tsconfig.test.json && node .test-dist/tests/bm25-acceptance.js",
+    "test:embedding": "tsc -p tsconfig.test.json && node .test-dist/tests/embedding-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",
