@@ -1,6 +1,7 @@
 import type { ChainPosition } from './chain-engine';
 import type { CalendarEntry, CharacterProfile, CharacterTrace, PlotPlan, Plotline, StateSnapshot } from './schema';
 import type { RecentContextItem } from './recent-context';
+import type { WeaveSuppression } from './external-mapping';
 
 export type CurrentStateInput = {
   snapshot: StateSnapshot;
@@ -8,7 +9,7 @@ export type CurrentStateInput = {
   recentFloorTexts: string[];
   recentPositions: ChainPosition[];
   recentContext?: RecentContextItem[];
-  suppressedWeaveFields?: string[];
+  suppressedWeaveFields?: WeaveSuppression[];
 };
 
 export type CurrentStateResult = {
@@ -53,7 +54,7 @@ export function renderCurrentState(input: CurrentStateInput): CurrentStateResult
     .filter(plan => plan.pinned || plan.relatedCharacterIds?.some(id => relatedCharacters.has(id)) || plan.relatedPlotlineIds?.some(id => relatedPlotlines.has(id)));
   const calendar = selectCalendar(story.calendar, story.now.currentTime, relatedCharacters);
 
-  const suppressed = new Set(input.suppressedWeaveFields ?? []);
+  const suppressed = input.suppressedWeaveFields ?? [];
   const sections: string[] = [
     '[织忆·当前状态]',
     '以下是当前剧情的结构化状态，只读参考。若与最新正文冲突，以最新正文为准。',
@@ -77,23 +78,24 @@ export function estimateTokens(text: string): number {
   return text ? Math.max(1, Math.ceil(text.length / 4)) : 0;
 }
 
-function renderProfiles(profiles: CharacterProfile[], suppressed: Set<string>): string {
+function renderProfiles(profiles: CharacterProfile[], suppressed: WeaveSuppression[]): string {
   if (!profiles.length) return '[谱]\n暂无与当前输入或近期剧情相关的人物。';
   return `[谱]\n${profiles.map(profile => {
     const value: Record<string, unknown> = {};
-    for (const field of PROFILE_FIELDS) if (!suppressed.has(`profile:${field}`)) value[field] = profile[field];
+    for (const field of PROFILE_FIELDS) { const target = { domain: 'profile' as const, characterId: profile.characterId, field }; if (isSuppressed(suppressed, target)) continue; value[field] = typeof profile[field] === 'object' && profile[field] !== null && !Array.isArray(profile[field]) ? suppressObject(profile[field] as Record<string, unknown>, suppressed, target) : profile[field]; }
     return `- ${JSON.stringify(value)}`;
   }).join('\n')}`;
 }
 
-function renderTraces(traces: CharacterTrace[], suppressed: Set<string>): string {
+function renderTraces(traces: CharacterTrace[], suppressed: WeaveSuppression[]): string {
   if (!traces.length) return '[迹]\n暂无相关人物当前状态。';
-  return `[迹]\n${traces.map(trace => { const value: Record<string, unknown> = { characterId: trace.characterId }; for (const field of ['longTermTendencies', 'currentSituations', 'visibility', 'affinity'] as const) if (!suppressed.has(`trace:${field}`)) value[field] = trace[field]; return `- ${JSON.stringify(value)}`; }).join('\n')}`;
+  return `[迹]\n${traces.map(trace => { const value: Record<string, unknown> = { characterId: trace.characterId }; for (const field of ['longTermTendencies', 'currentSituations', 'visibility', 'affinity'] as const) { const target = { domain: 'trace' as const, characterId: trace.characterId, field }; if (field === 'longTermTendencies' || field === 'currentSituations' || field === 'visibility') { value[field] = trace[field].filter(item => !isSuppressedItem(suppressed, target, item.id, 'text' in item ? item.text : '')); } else if (!isSuppressed(suppressed, target)) value[field] = suppressObject(trace[field], suppressed, target); } return `- ${JSON.stringify(value)}`; }).join('\n')}`;
 }
 
-function renderNow(now: StateSnapshot['story']['now'], suppressed: Set<string>): string {
-  if (suppressed.has('story:now')) return '[事·现在]\n当前事件状态已由外部状态源注入。';
-  return `[事·现在]\n${JSON.stringify({ currentTime: now.currentTime, ongoing: now.ongoing, upcoming: now.upcoming })}`;
+function renderNow(now: StateSnapshot['story']['now'], suppressed: WeaveSuppression[]): string {
+  const value: Record<string, unknown> = { currentTime: now.currentTime, ongoing: now.ongoing.filter(item => !isSuppressedItem(suppressed, { domain: 'story', field: 'now.ongoing' }, item.id, `${item.title} ${item.description ?? ''}`)), upcoming: now.upcoming.filter(item => !isSuppressedItem(suppressed, { domain: 'story', field: 'now.upcoming' }, item.id, `${item.title} ${item.description ?? ''}`)) };
+  if (isSuppressed(suppressed, { domain: 'story', field: 'now.currentTime' })) delete value.currentTime;
+  return `[事·现在]\n${JSON.stringify(value)}`;
 }
 
 function renderRecentContext(items: RecentContextItem[]): string {
@@ -101,19 +103,19 @@ function renderRecentContext(items: RecentContextItem[]): string {
   return `[织忆·近期上下文]\n${items.map(item => `- AI楼 ${item.messageIndex}（${item.source === 'summary' ? '摘要' : item.source === 'fallback' ? '摘要失败，使用原文' : '原文'}）：${item.text}`).join('\n')}`;
 }
 
-function renderCalendar(entries: CalendarEntry[], suppressed: Set<string>): string {
-  if (suppressed.has('story:calendar')) return '[事·日历]\n当前日历已由外部状态源注入。';
-  return `[事·日历]\n${entries.length ? entries.map(entry => `- ${JSON.stringify(entry)}`).join('\n') : '当前日期附近暂无已确认事项。'}`;
+function renderCalendar(entries: CalendarEntry[], suppressed: WeaveSuppression[]): string {
+  const visible = entries.filter(entry => !isSuppressedItem(suppressed, { domain: 'story', field: 'calendar' }, entry.id, `${entry.title} ${entry.description ?? ''}`));
+  return `[事·日历]\n${visible.length ? visible.map(entry => `- ${JSON.stringify(entry)}`).join('\n') : '当前日期附近暂无已确认事项。'}`;
 }
 
-function renderPlotlines(plotlines: Plotline[], suppressed: Set<string>): string {
-  if (suppressed.has('story:plotlines')) return '[事·剧情线]\n当前剧情线已由外部状态源注入。';
-  return `[事·剧情线]\n${plotlines.length ? plotlines.map(plotline => `- ${JSON.stringify(plotline)}`).join('\n') : '暂无当前相关剧情线。'}`;
+function renderPlotlines(plotlines: Plotline[], suppressed: WeaveSuppression[]): string {
+  const visible = plotlines.filter(plotline => !isSuppressedItem(suppressed, { domain: 'story', field: 'plotlines' }, plotline.id, `${plotline.name} ${plotline.currentState}`));
+  return `[事·剧情线]\n${visible.length ? visible.map(plotline => `- ${JSON.stringify(plotline)}`).join('\n') : '暂无当前相关剧情线。'}`;
 }
 
-function renderPlans(plans: PlotPlan[], suppressed: Set<string>): string {
-  if (suppressed.has('story:plotPlans')) return '[事·剧情安排]\n以下为未来规划，不代表已经发生。\n当前剧情安排已由外部状态源注入。';
-  return `[事·剧情安排]\n以下为未来规划，不代表已经发生。\n${plans.length ? plans.map(plan => `- ${JSON.stringify(plan)}`).join('\n') : '暂无当前相关剧情安排。'}`;
+function renderPlans(plans: PlotPlan[], suppressed: WeaveSuppression[]): string {
+  const visible = plans.filter(plan => !isSuppressedItem(suppressed, { domain: 'story', field: 'plotPlans' }, plan.id, `${plan.title} ${plan.description ?? ''}`));
+  return `[事·剧情安排]\n以下为未来规划，不代表已经发生。\n${visible.length ? visible.map(plan => `- ${JSON.stringify(plan)}`).join('\n') : '暂无当前相关剧情安排。'}`;
 }
 
 function selectCalendar(entries: CalendarEntry[], currentTime: string | undefined, characterIds: Set<string>): CalendarEntry[] {
@@ -136,4 +138,18 @@ function parseDateKey(value: string | undefined): Date | null {
   if (!match) return null;
   const date = new Date(`${match[0]}T00:00:00Z`);
   return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isSuppressed(all: WeaveSuppression[], target: WeaveSuppression): boolean {
+  return all.some(item => item.domain === target.domain && (!item.characterId || item.characterId === target.characterId) && item.field === target.field && !item.itemId && !item.semanticKey);
+}
+
+function isSuppressedItem(all: WeaveSuppression[], target: WeaveSuppression, itemId: string, text: string): boolean {
+  return all.some(item => item.domain === target.domain && (!item.characterId || item.characterId === target.characterId) && item.field === target.field && ((!item.itemId && !item.semanticKey) || item.itemId === itemId || item.semanticKey === itemId || Boolean(item.semanticKey && text.includes(item.semanticKey))));
+}
+
+function suppressObject(value: Record<string, unknown>, all: WeaveSuppression[], target: WeaveSuppression): Record<string, unknown> {
+  const result = { ...value };
+  for (const key of Object.keys(result)) if (isSuppressed(all, { ...target, field: `${target.field}.${key}` })) delete result[key];
+  return result;
 }

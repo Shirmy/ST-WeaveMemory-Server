@@ -7,6 +7,7 @@ import type { MemoryStore } from '../src/storage/types';
 import type { PerChatQueue } from '../src/queue/per-chat-queue';
 import type { StateTaskRunner } from '../src/ai/state-task-runner';
 import type { CharacterProfile } from '../src/state/schema';
+import { resolveExternalMappings } from '../src/state/external-mapping';
 
 const source = { branchId: 'branch:test', sourceFloorIds: ['floor-1'], sourceHostChatIds: ['chat'] };
 
@@ -21,6 +22,9 @@ async function main(): Promise<void> {
     snapshot.profiles[id] = profile(id, id[0].toUpperCase() + id.slice(1));
     snapshot.traces[id] = { characterId: id, longTermTendencies: [], currentSituations: [], visibility: [], affinity: { inner: 0, outer: 0 }, source, updatedAt: '2026-01-01' };
   }
+  snapshot.traces.alice.currentSituations = [{ id: 'location', text: 'location = 书房' }, { id: 'injury', text: 'injury = 手臂受伤' }, { id: 'action', text: 'action = 正在翻阅文件' }];
+  snapshot.traces.bob.currentSituations = [{ id: 'location', text: 'location = 客厅' }, { id: 'emotion', text: 'emotion = 紧张' }];
+  snapshot.profiles.alice.basic = { age: '20', gender: '女', birthday: '01-01' };
   snapshot.story.now.currentTime = '2026-01-10';
   snapshot.story.now.ongoing = [{ id: 'ongoing', title: '车站调查', relatedCharacterIds: ['bob'], relatedPlotlineIds: ['active-plot'] }];
   snapshot.story.now.upcoming = [{ id: 'upcoming', title: '夜间会面', relatedCharacterIds: ['bob'] }];
@@ -64,12 +68,30 @@ async function main(): Promise<void> {
   const prepared = await runtime.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 0, latestUserIndex: 2, latestUserText: 'Alice，我们继续调查。' });
   assert.equal(prepared.ready, true);
   assert.equal(prepared.diagnostics.stateTokens, rendered.tokens);
-  const mapped = await runtime.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 0, latestUserIndex: 2, latestUserText: 'Alice', externalState: { source: 'mvu', detected: true, statData: { role: { location: 'study' } }, messageIndex: 1, swipeId: 0, cardId: 'card-a', mappings: [{ id: 'location', source: 'mvu', externalPath: 'role.location', weaveTarget: { domain: 'trace', path: 'currentSituations.location' }, mode: 'equivalent', enabled: true }] } });
+  const mapped = await runtime.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 0, latestUserIndex: 2, latestUserText: 'Alice', externalState: { source: 'mvu', detected: true, statData: { role: { location: 'study' } }, messageIndex: 1, swipeId: 0, cardId: 'card-a', mappings: [{ id: 'location', source: 'mvu', externalPath: 'role.location', weaveTarget: { domain: 'trace', characterId: 'alice', path: 'currentSituations.location' }, mode: 'equivalent', enabled: true }] } });
   assert.equal(mapped.ready, true);
   const mappedDiagnostics = mapped.diagnostics as typeof mapped.diagnostics & { tokensBeforeMapping?: number; tokensAfterMapping?: number; activeEquivalentMappings?: string[] };
   assert.equal((mappedDiagnostics.tokensBeforeMapping ?? 0) >= (mappedDiagnostics.tokensAfterMapping ?? 0), true);
   assert.equal(mappedDiagnostics.stateTokens, mappedDiagnostics.tokensAfterMapping);
   assert.deepEqual(mappedDiagnostics.activeEquivalentMappings, ['location']);
+  const precise = resolveExternalMappings({ source: 'mvu', detected: true, statData: { location: '书房', age: 20, now: 'today' }, messageIndex: 1, swipeId: 0, cardId: 'card-a', mappings: [
+    { id: 'alice-location', source: 'mvu', externalPath: 'location', weaveTarget: { domain: 'trace', characterId: 'alice', field: 'currentSituations', semanticKey: 'location' }, mode: 'equivalent', enabled: true },
+    { id: 'age', source: 'mvu', externalPath: 'age', weaveTarget: { domain: 'profile', characterId: 'alice', field: 'basic.age' }, mode: 'equivalent', enabled: true },
+    { id: 'current-time', source: 'mvu', externalPath: 'now', weaveTarget: { domain: 'story', field: 'now.currentTime' }, mode: 'equivalent', enabled: true }
+  ] });
+  const preciseRendered = renderCurrentState({ snapshot, userText: 'Alice', recentFloorTexts: [], recentPositions: [], suppressedWeaveFields: precise.suppressedWeaveFields });
+  const aliceLine = preciseRendered.text.split('\n').find(line => line.includes('"characterId":"alice"')) ?? '';
+  const bobLine = preciseRendered.text.split('\n').find(line => line.includes('"characterId":"bob"')) ?? '';
+  const profileLine = preciseRendered.text.split('\n').find(line => line.includes('"canonicalName":"Alice"')) ?? '';
+  assert.equal(aliceLine.includes('location = 书房'), false);
+  assert.equal(aliceLine.includes('injury = 手臂受伤'), true);
+  assert.equal(aliceLine.includes('action = 正在翻阅文件'), true);
+  assert.equal(profileLine.includes('"age"'), false);
+  assert.equal(profileLine.includes('"gender"'), true);
+  assert.equal(profileLine.includes('"birthday"'), true);
+  assert.equal(bobLine.includes('location = 客厅'), true);
+  assert.equal(preciseRendered.text.includes('currentTime'), false);
+  assert.equal(preciseRendered.text.includes('ongoing'), true);
   console.log('current state acceptance passed');
 }
 
