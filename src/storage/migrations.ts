@@ -308,6 +308,30 @@ CREATE INDEX IF NOT EXISTS idx_state_nodes_branch_dependency
 ALTER TABLE long_memories ADD COLUMN batch_dependency_fingerprint TEXT NOT NULL DEFAULT '';
 ALTER TABLE long_memories ADD COLUMN source_floor_ids TEXT NOT NULL DEFAULT '[]';
 `
+}, {
+  version: 8,
+  name: 'long-memory-batches',
+  sql: `
+CREATE TABLE IF NOT EXISTS long_memory_batches (
+  batch_id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL,
+  branch_id TEXT NOT NULL,
+  batch_start_floor INTEGER NOT NULL,
+  batch_end_floor INTEGER NOT NULL,
+  source_floor_ids TEXT NOT NULL,
+  batch_dependency_fingerprint TEXT NOT NULL,
+  end_state_node_id TEXT NOT NULL,
+  end_state_fingerprint TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_long_memory_batches_scope
+  ON long_memory_batches(chat_id, branch_id, batch_start_floor, stale);
+ALTER TABLE long_memories ADD COLUMN batch_start_floor INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE long_memories ADD COLUMN batch_end_floor INTEGER NOT NULL DEFAULT 0;
+UPDATE long_memories SET stale = 1 WHERE batch_start_floor = 0 OR batch_end_floor = 0;
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

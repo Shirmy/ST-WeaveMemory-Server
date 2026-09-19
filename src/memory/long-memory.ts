@@ -44,6 +44,23 @@ export type LongMemoryRecord = LongMemorySliceDraft & {
   updatedAt: string;
   sourceFloorIds: string[];
   batchDependencyFingerprint: string;
+  batchStartFloor: number;
+  batchEndFloor: number;
+};
+
+export type LongMemoryBatch = {
+  batchId: string;
+  chatId: string;
+  branchId: string;
+  batchStartFloor: number;
+  batchEndFloor: number;
+  sourceFloorIds: string[];
+  batchDependencyFingerprint: string;
+  endStateNodeId: string;
+  endStateFingerprint: string;
+  stale: boolean;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export const DEFAULT_LONG_MEMORY_PROMPT: PromptContent = {
@@ -76,6 +93,18 @@ export function parseLongMemoryOutput(raw: string, input: LongMemoryBatchInput):
 
 export type LongMemoryGeneratorDeps = { aiConfig: AiConfigStore; client: OpenAiCompatibleClient; store: LongMemoryStore };
 
+export function buildLongMemoryDependency(input: LongMemoryBatchInput, prompt: PromptContent): string {
+  return fingerprint(JSON.stringify({
+    branchId: input.branchId,
+    batchStartFloor: input.batchStartFloor,
+    batchEndFloor: input.batchEndFloor,
+    sourceFloors: input.floors.map(floor => ({ floorId: floor.floorId, contentFingerprint: fingerprint(floor.content) })),
+    stateDeltas: input.stateDeltas,
+    endStateFingerprint: input.endStateDigest.stateFingerprint,
+    prompt
+  }));
+}
+
 export class LongMemoryGenerator {
   constructor(private readonly deps: LongMemoryGeneratorDeps) {}
 
@@ -87,15 +116,18 @@ export class LongMemoryGenerator {
     let prompt: { preset: { content: PromptContent } };
     try { prompt = await this.deps.aiConfig.getActivePrompt('summary'); }
     catch { prompt = { preset: { content: DEFAULT_LONG_MEMORY_PROMPT } }; }
+    const dependency = buildLongMemoryDependency(input, prompt.preset.content);
+    const reusable = await this.deps.store.findByDependency(input.chatId, input.branchId, dependency, { includeStale: true });
+    if (reusable.length) {
+      await this.deps.store.reactivateBatch(reusable[0].batchId);
+      return this.deps.store.listByBatch(reusable[0].batchId);
+    }
     const completion = await this.deps.client.chatCompletion(channel, { model: binding.model, messages: renderLongMemoryMessages(input, prompt.preset.content), temperature: 0.2, maxTokens: 4096, timeoutMs: (channel.timeout ?? 120) * 1000 });
     const output = parseLongMemoryOutput(completion.text, input);
-    const dependency = fingerprint(JSON.stringify({ floors: input.floors.map(floor => ({ id: floor.floorId, content: fingerprint(floor.content) })), stateDeltas: input.stateDeltas, endState: input.endStateDigest, prompt: prompt.preset.content }));
-    const reusable = await this.deps.store.findByDependency(input.chatId, input.branchId, dependency);
-    if (reusable.length) return reusable;
     const batchId = `batch_${randomUUID()}`; const now = new Date().toISOString();
-    const records = output.slices.map((slice, index) => ({ ...slice, memoryId: `memory_${randomUUID()}`, chatId: input.chatId, branchId: input.branchId, batchId, sliceId: `${batchId}:slice:${index + 1}`, sourceFloorIds: input.floors.slice(slice.startFloor - input.batchStartFloor, slice.endFloor - input.batchStartFloor + 1).map(floor => floor.floorId), batchDependencyFingerprint: dependency, endStateNodeId: input.endStateDigest.stateNodeId, endStateFingerprint: input.endStateDigest.stateFingerprint, bm25Indexed: false, embeddingIndexed: false, stale: false, createdAt: now, updatedAt: now }));
+    const records = output.slices.map((slice, index) => ({ ...slice, memoryId: `memory_${randomUUID()}`, chatId: input.chatId, branchId: input.branchId, batchId, sliceId: `${batchId}:slice:${index + 1}`, batchStartFloor: input.batchStartFloor, batchEndFloor: input.batchEndFloor, sourceFloorIds: input.floors.slice(slice.startFloor - input.batchStartFloor, slice.endFloor - input.batchStartFloor + 1).map(floor => floor.floorId), batchDependencyFingerprint: dependency, endStateNodeId: input.endStateDigest.stateNodeId, endStateFingerprint: input.endStateDigest.stateFingerprint, bm25Indexed: false, embeddingIndexed: false, stale: false, createdAt: now, updatedAt: now }));
     await this.deps.store.markStaleByFloorIds(input.chatId, input.branchId, input.floors.map(floor => floor.floorId));
-    await this.deps.store.insertBatch(records);
+    await this.deps.store.insertBatch(records, { batchId, chatId: input.chatId, branchId: input.branchId, batchStartFloor: input.batchStartFloor, batchEndFloor: input.batchEndFloor, sourceFloorIds: input.floors.map(floor => floor.floorId), batchDependencyFingerprint: dependency, endStateNodeId: input.endStateDigest.stateNodeId, endStateFingerprint: input.endStateDigest.stateFingerprint, stale: false, createdAt: now, updatedAt: now });
     return records;
   }
 }
