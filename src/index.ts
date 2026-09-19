@@ -2,6 +2,7 @@ import type { Router } from 'express';
 import { registerAiRoutes } from './api/ai-routes';
 import { registerRoutes } from './api/routes';
 import { registerStateRoutes } from './api/state-routes';
+import { registerMemoryRoutes } from './api/memory-routes';
 import { OpenAiCompatibleClient } from './ai/openai-compatible-client';
 import { SecretBox } from './ai/secret-box';
 import { SnapshotContextProvider } from './ai/snapshot-context-provider';
@@ -16,6 +17,9 @@ import { SqliteDatabase } from './storage/sqlite-database';
 import { SqliteStore } from './storage/sqlite-store';
 import { StateChainStore } from './storage/state-chain-store';
 import { StateTaskStore } from './storage/state-task-store';
+import { LongMemoryStore } from './storage/long-memory-store';
+import { LongMemoryGenerator } from './memory/long-memory';
+import { LongMemoryScheduler } from './memory/long-memory-scheduler';
 
 interface PluginInfo { id: string; name: string; description: string; }
 interface Plugin { init: (router: Router) => Promise<void>; exit: () => Promise<void>; info: PluginInfo; }
@@ -44,13 +48,15 @@ export async function init(router: Router): Promise<void> {
   const queue = new PerChatQueue();
   const client = new OpenAiCompatibleClient();
   const tasks = new StateTaskStore(openedDatabase);
+  const chainStore = new StateChainStore(openedDatabase);
   const chain = new StateChainEngine({
     database: openedDatabase,
-    chain: new StateChainStore(openedDatabase),
+    chain: chainStore,
     store,
     checkpointInterval: async () => (await aiConfig.getStateTaskSettings()).checkpointInterval,
     promptVersion: async () => (await aiConfig.getActivePrompt('state')).promptVersion
   });
+  let longMemoryScheduler: LongMemoryScheduler | null = null;
   const runner = new StateTaskRunner({
     store,
     tasks,
@@ -58,13 +64,18 @@ export async function init(router: Router): Promise<void> {
     client,
     queue,
     context: new SnapshotContextProvider(chain, tasks),
-    chain
+    chain,
+    onStateCommitted: async input => longMemoryScheduler?.onStateCommitted(input)
   });
   stateTasks = runner;
+  const longMemoryStore = new LongMemoryStore(openedDatabase);
+  const longMemoryGenerator = new LongMemoryGenerator({ aiConfig, client, store: longMemoryStore });
+  longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator });
   const activeRuntime = new MemoryRuntime(store, queue, runner, chain);
   registerRoutes(router, activeRuntime, openedDatabase);
   registerAiRoutes(router, { aiConfig, client, stateTasks: runner });
   registerStateRoutes(router, { stateTasks: runner, chain, store });
+  registerMemoryRoutes(router, { generator: longMemoryGenerator, store: longMemoryStore });
   await runner.resumePending();
   console.log('[WeaveMemory] server v0.1.0 loaded');
 }

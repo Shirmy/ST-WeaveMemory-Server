@@ -113,6 +113,7 @@ export type StateTaskRunnerDeps = {
   chain?: StateChainEngine;
   /** Test hook: overrides the exponential backoff between attempts. */
   backoffMs?: (attempt: number) => number;
+  onStateCommitted?: (input: { chatId: string; branchId: string }) => Promise<void>;
 };
 
 type ReusePlan = { fromJobId: string; candidate: StateAnalysisCandidate };
@@ -767,6 +768,8 @@ export class StateTaskRunner {
         throw error;
       }
       await tasks.updateJob(jobId, { status: 'succeeded', attempts: outcome.attempts, result, errorCode: null, errorMessage: null, finishedAt: now });
+      const onStateCommitted = this.deps.onStateCommitted;
+      if (onStateCommitted) void onStateCommitted({ chatId: current.chatId, branchId: current.branchId }).catch(error => console.error('[WeaveMemory] long-memory scheduling failed', current.chatId, errorMessage(error)));
       // Roadmap §21: keep rebuilding forward until the chain converges or ends. A cascade started by the
       // user (manual re-run or forced rebuild) keeps its manual intent so prompt-version and failure guards do not stop it.
       const mode = current.payload.reason === 'manual' || current.payload.reason === 'manual-rebuild' ? 'manual' : 'auto';
