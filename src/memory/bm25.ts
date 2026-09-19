@@ -94,21 +94,40 @@ export class Bm25Index {
 }
 
 export class Bm25SearchService {
-  private scopeKey: string | null = null;
-  constructor(private readonly store: LongMemoryStore, readonly index = new Bm25Index()) {}
+  private readonly scopes = new Map<string, { index: Bm25Index }>();
+  private readonly syncs = new Map<string, Promise<void>>();
+
+  constructor(private readonly store: LongMemoryStore) {}
+
+  private scope(chatId: string, branchId: string): { key: string; index: Bm25Index } {
+    const key = `${chatId}\u0000${branchId}`;
+    let value = this.scopes.get(key);
+    if (!value) { value = { index: new Bm25Index() }; this.scopes.set(key, value); }
+    return { key, index: value.index };
+  }
 
   async search(chatId: string, branchId: string, query: string, topK = 10): Promise<Bm25Result[]> {
+    const scope = this.scope(chatId, branchId);
     await this.sync(chatId, branchId);
-    return this.index.search(query, topK);
+    return scope.index.search(query, topK);
   }
 
   async sync(chatId: string, branchId: string): Promise<void> {
-    const scope = `${chatId}\u0000${branchId}`;
-    if (this.scopeKey !== scope) { this.index.clear(); this.scopeKey = scope; }
+    const scope = this.scope(chatId, branchId);
+    const previous = this.syncs.get(scope.key) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(() => this.syncScope(chatId, branchId, scope.index));
+    this.syncs.set(scope.key, current);
+    try { await current; }
+    finally { if (this.syncs.get(scope.key) === current) this.syncs.delete(scope.key); }
+  }
+
+  private async syncScope(chatId: string, branchId: string, index: Bm25Index): Promise<void> {
     const records = await this.store.list(chatId, branchId);
     const activeIds = new Set(records.map(record => record.memoryId));
-    for (const record of records) this.index.upsert(record);
-    // Remove stale/deleted records while retaining unchanged documents.
-    for (const id of this.index.ids()) if (!activeIds.has(id)) this.index.remove(id);
+    for (const record of records) index.upsert({ ...record, bm25Indexed: true });
+    const removedIds = index.ids().filter(id => !activeIds.has(id));
+    for (const id of removedIds) index.remove(id);
+    await this.store.setBm25Indexed([...activeIds], true);
+    if (removedIds.length) await this.store.setBm25Indexed(removedIds, false);
   }
 }

@@ -72,6 +72,7 @@ export async function init(router: Router): Promise<void> {
   });
   stateTasks = runner;
   longMemoryStore = new LongMemoryStore(openedDatabase);
+  await longMemoryStore.resetBm25Indexed();
   const longMemoryGenerator = new LongMemoryGenerator({ aiConfig, client, store: longMemoryStore });
   const bm25 = new Bm25SearchService(longMemoryStore);
   longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator, getSummaryIntervalFloors: async () => (await aiConfig.getLongMemorySettings()).summaryIntervalFloors });
