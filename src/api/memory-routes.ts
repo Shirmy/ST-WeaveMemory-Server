@@ -5,7 +5,6 @@ import { LongMemoryStore } from '../storage/long-memory-store';
 import { Bm25SearchService } from '../memory/bm25';
 import { EmbeddingSearchService } from '../memory/embedding';
 import { RecallService, type RecallOptions } from '../memory/recall';
-import { packMemories } from '../memory/token-packer';
 import { RECALL_SETTING_LIMITS } from '../ai/types';
 import { ApiError } from './errors';
 import { bodyObject, optionalInteger, optionalString, requiredString, wrapRoute } from './request-utils';
@@ -58,16 +57,7 @@ export function registerMemoryRoutes(router: Router, deps: MemoryRouteDependenci
   router.post('/recall/debug', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const options = body.options && typeof body.options === 'object' && !Array.isArray(body.options) ? recallOptions(body.options as Record<string, unknown>) : {};
-    const result = await deps.recall.recall(requiredString(body.chatId, 'chatId'), requiredString(body.branchId, 'branchId'), requiredString(body.query, 'query'), options);
-    const packCandidates = result.rerank.status === 'applied' ? result.rerank.candidates : result.rrf;
-    const pack = packMemories(packCandidates, {
-      contextWindow: typeof body.contextWindow === 'number' ? body.contextWindow : 0,
-      maxMemoryCount: typeof body.maxMemoryCount === 'number' ? body.maxMemoryCount : undefined,
-      fixedRecentCount: typeof body.fixedRecentCount === 'number' ? body.fixedRecentCount : undefined,
-      tokenLimit: typeof body.tokenLimit === 'number' ? body.tokenLimit : undefined,
-      currentState: typeof body.currentState === 'string' ? body.currentState : undefined
-    });
-    return { ...result, pack };
+    return deps.recall.recall(requiredString(body.chatId, 'chatId'), requiredString(body.branchId, 'branchId'), requiredString(body.query, 'query'), options);
   }));
   router.post('/memory/resummarize', json, wrapRoute(async req => {
     const body = bodyObject(req);

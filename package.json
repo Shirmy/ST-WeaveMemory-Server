@@ -32,8 +32,7 @@
     "test:long-memory-recovery": "tsc -p tsconfig.test.json && node .test-dist/tests/long-memory-recovery-acceptance.js",
     "test:bm25": "tsc -p tsconfig.test.json && node .test-dist/tests/bm25-acceptance.js",
     "test:embedding": "tsc -p tsconfig.test.json && node .test-dist/tests/embedding-acceptance.js",
-    "test:recall": "tsc -p tsconfig.test.json && node .test-dist/tests/recall-acceptance.js",
-    "test:token-packer": "tsc -p tsconfig.test.json && node .test-dist/tests/token-packer-acceptance.js"
+    "test:recall": "tsc -p tsconfig.test.json && node .test-dist/tests/recall-acceptance.js"
   },
   "dependencies": {
     "body-parser": "^1.20.3",
