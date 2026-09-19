@@ -13,13 +13,15 @@ async function main(): Promise<void> {
   let taskStatus: 'pending' | 'failed' = 'pending';
   const position: Position = { messageIndex: 1, floorId: 'floor-1', valid: false, node: null };
   const chain = {
-    trustedPrefix: async () => ({ chatId: 'chat', branchId: 'branch', promptVersion: 'p', positions: [position], firstInvalidIndex: 1, firstLineageBreakIndex: 1, head: null, lineageHead: null, nodes: [] })
+    trustedPrefix: async () => ({ chatId: 'chat', branchId: 'branch', promptVersion: 'p', positions: [position], firstInvalidIndex: position.valid ? null : 1, firstLineageBreakIndex: position.valid ? null : 1, head: position.node, lineageHead: position.node, nodes: [] }),
+    snapshotAtFloor: async () => null,
+    current: async () => ({ snapshot: { schemaVersion: 1, branchId: 'branch', profiles: {}, traces: {}, story: { now: { ongoing: [], upcoming: [] }, calendar: [], plotlines: [], plotPlans: [], source: { branchId: 'branch', sourceFloorIds: [], sourceHostChatIds: [] } }, updatedAt: '' } })
   };
   const tasks = {
     listTasks: async () => [{ status: taskStatus }],
     rebuild: async () => { rebuilds += 1; return { skipped: null }; }
   };
-  const store = { getOrCreateActiveBranch: async () => 'branch' };
+  const store = { getOrCreateActiveBranch: async () => 'branch', getFloor: async () => null };
   const runtime = new MemoryRuntime(
     store as unknown as MemoryStore,
     {} as unknown as PerChatQueue,

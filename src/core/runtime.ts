@@ -4,6 +4,7 @@ import type { ChatReconcileRequest, CreateBranchRequest, FloorFinalizeRequest, G
 import { floorKeyFor, type MemoryStore } from '../storage/types';
 import { PerChatQueue } from '../queue/per-chat-queue';
 import type { ChainPosition, StateChainEngine, TrustedPrefix } from '../state/chain-engine';
+import { renderCurrentState } from '../state/current-state';
 
 const GENERATION_GATE_TIMEOUT_MS = 45_000;
 const GENERATION_GATE_POLL_MS = 150;
@@ -90,7 +91,19 @@ export class MemoryRuntime {
       const prefix = await this.chain.trustedPrefix(input.chatId, branchId);
       const previous = previousAiPosition(prefix, input.latestUserIndex);
       if (!previous || previous.valid) {
-        return { ready: true, longMemory: '', currentState: '', diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: 0, stateNodeId: previous?.node?.stateNodeId } };
+        const view = previous
+          ? await this.chain.snapshotAtFloor(input.chatId, branchId, previous.messageIndex, previous.swipeId)
+          : null;
+        const snapshot = view?.snapshot ?? (await this.chain.current(input.chatId, branchId)).snapshot;
+        const recentPositions = prefix.positions.filter(position => position.messageIndex < (input.latestUserIndex ?? Number.MAX_SAFE_INTEGER)).slice(-4);
+        const recentFloors = await Promise.all(recentPositions.map(position => this.store.getFloor(position.floorId)));
+        const rendered = renderCurrentState({
+          snapshot,
+          userText: input.latestUserText,
+          recentFloorTexts: recentFloors.filter(Boolean).map(floor => floor!.content),
+          recentPositions
+        });
+        return { ready: true, longMemory: '', currentState: rendered.text, diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: rendered.tokens, stateNodeId: previous?.node?.stateNodeId } };
       }
       const status = await this.positionStatus(previous, input.chatId);
       if (!resyncStarted && (status === 'failed' || status === 'missing' || status === 'stale')) {
