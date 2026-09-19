@@ -340,10 +340,19 @@ UPDATE long_memory_batches
 SET stale = 1
 WHERE stale = 0
   AND batch_id NOT IN (
-    SELECT MAX(batch_id)
-    FROM long_memory_batches
-    WHERE stale = 0
-    GROUP BY chat_id, branch_id, batch_start_floor, batch_end_floor
+    SELECT older.batch_id
+    FROM long_memory_batches older
+    WHERE older.stale = 0
+      AND EXISTS (
+        SELECT 1
+        FROM long_memory_batches newer
+        WHERE newer.stale = 0
+          AND newer.chat_id = older.chat_id
+          AND newer.branch_id = older.branch_id
+          AND newer.batch_start_floor = older.batch_start_floor
+          AND newer.batch_end_floor = older.batch_end_floor
+          AND (newer.updated_at > older.updated_at OR (newer.updated_at = older.updated_at AND newer.created_at > older.created_at))
+      )
   );
 UPDATE long_memories
 SET stale = 1
