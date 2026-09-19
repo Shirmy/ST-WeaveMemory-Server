@@ -124,6 +124,13 @@ async function main(): Promise<void> {
 
     assert.deepEqual(await store.saveLongMemorySettings({ summaryIntervalFloors: 20 }), { summaryIntervalFloors: 20 });
     assert.deepEqual(await store.getLongMemorySettings(), { summaryIntervalFloors: 20 });
+    // recall settings: roadmap §62 defaults, partial patches, validation, persistence
+    assert.deepEqual(await store.getRecallSettings(), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: false, rerankCandidateLimit: 20, finalRecallCount: 6 });
+    assert.deepEqual(await store.saveRecallSettings({ rerankEnabled: true, rerankCandidateLimit: 30 }), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: true, rerankCandidateLimit: 30, finalRecallCount: 6 });
+    await expectConfigError(() => store.saveRecallSettings({ rrfK: 0 }));
+    await expectConfigError(() => store.saveRecallSettings({ finalRecallCount: 51 }));
+    await expectConfigError(() => store.saveRecallSettings({ rerankEnabled: 'yes' as never }));
+    assert.deepEqual(await store.getRecallSettings(), { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: true, rerankCandidateLimit: 30, finalRecallCount: 6 });
     // schema reached v13 and long-memory source/dependency columns are present
     const version = await database.get<{ user_version: number }>('PRAGMA user_version');
     assert.equal(version?.user_version, 13);

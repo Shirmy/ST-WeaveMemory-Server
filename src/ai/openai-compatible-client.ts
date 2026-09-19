@@ -40,6 +40,11 @@ export type ChatCompletionResult = {
 
 export type EmbeddingResult = { vector: number[]; model: string | null; durationMs: number };
 
+export type RerankScore = { index: number; relevanceScore: number };
+export type RerankResult = { scores: RerankScore[]; model: string | null; durationMs: number };
+/** Reference (shujuku rerank gateway): providers truncate documents around 4k tokens; trim early to bound request size. */
+const RERANK_DOCUMENT_MAX_CHARS = 2000;
+
 export type ModelTestResult = { ok: true; role: AiRole; model: string; detail: string; durationMs: number };
 
 type RequestInitLite = { method: 'GET' | 'POST'; body?: string };
@@ -132,6 +137,31 @@ export class OpenAiCompatibleClient {
       throw new AiRequestError('WM_INVALID_RESPONSE', 'embedding response contains an invalid vector', false);
     }
     return { vector, model: typeof data.model === 'string' ? data.model : null, durationMs: Date.now() - startedAt };
+  }
+
+  /**
+   * Scores `documents` against `query` with a rerank model (`POST /rerank`, Jina / Cohere / SiliconFlow style).
+   * Accepts `results[]`, `data.results[]` or `data[]` items carrying `index` + `relevance_score` (or `score`).
+   * Out-of-range or non-numeric items are dropped; an answer without any usable score is an invalid response.
+   */
+  async rerank(channel: ChannelEndpoint, model: string, query: string, documents: string[], timeoutMs: number, signal?: AbortSignal): Promise<RerankResult> {
+    const startedAt = Date.now();
+    const trimmed = documents.map(document => document.trim().slice(0, RERANK_DOCUMENT_MAX_CHARS));
+    if (!trimmed.length) return { scores: [], model: null, durationMs: 0 };
+    const body = JSON.stringify({ model, query, documents: trimmed });
+    const data = asRecord(await this.requestJson(channel, 'rerank', { method: 'POST', body }, timeoutMs, signal));
+    const nested = asRecord(data.data);
+    const rawResults: unknown[] = Array.isArray(data.results) ? data.results : Array.isArray(nested.results) ? nested.results : Array.isArray(data.data) ? data.data : [];
+    const scores: RerankScore[] = [];
+    for (const raw of rawResults) {
+      const item = asRecord(raw);
+      const index = Number(item.index ?? item.document_index ?? item.documentIndex);
+      const relevanceScore = Number(item.relevance_score ?? item.relevanceScore ?? item.score ?? item.rerank_score);
+      if (!Number.isInteger(index) || index < 0 || index >= trimmed.length || !Number.isFinite(relevanceScore)) continue;
+      scores.push({ index, relevanceScore });
+    }
+    if (!scores.length) throw new AiRequestError('WM_INVALID_RESPONSE', 'rerank response contains no usable scores', false);
+    return { scores, model: typeof data.model === 'string' ? data.model : null, durationMs: Date.now() - startedAt };
   }
 
   async testModel(channel: ChannelEndpoint, model: string, role: AiRole, timeoutMs: number, signal?: AbortSignal): Promise<ModelTestResult> {

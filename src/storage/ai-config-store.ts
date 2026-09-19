@@ -21,6 +21,9 @@ import {
   type PromptType,
   type StateTaskSettings
   , type LongMemorySettings
+  , type RecallSettings
+  , DEFAULT_RECALL_SETTINGS
+  , RECALL_SETTING_LIMITS
 } from '../ai/types';
 import type { SqliteDatabase } from './sqlite-database';
 
@@ -36,6 +39,7 @@ const MAX_HEADER_COUNT = 20;
 const CHANNEL_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,80}$/;
 const META_STATE_SETTINGS = 'ai.state.settings';
 const META_LONG_MEMORY_SETTINGS = 'memory.long.settings';
+const META_RECALL_SETTINGS = 'memory.recall.settings';
 const metaActivePrompt = (type: PromptType): string => `prompt.active.${type}`;
 
 export const BUILTIN_PRESET_IDS: Record<PromptType, string> = { state: 'builtin:state', summary: 'builtin:summary' };
@@ -446,6 +450,31 @@ export class AiConfigStore {
     return next;
   }
 
+  async getRecallSettings(): Promise<RecallSettings> {
+    const raw = await this.getMeta(META_RECALL_SETTINGS);
+    if (!raw) return { ...DEFAULT_RECALL_SETTINGS };
+    try { return normalizeRecallSettings(JSON.parse(raw) as Partial<RecallSettings>); }
+    catch { return { ...DEFAULT_RECALL_SETTINGS }; }
+  }
+
+  async saveRecallSettings(patch: Partial<RecallSettings>): Promise<RecallSettings> {
+    const current = await this.getRecallSettings();
+    const next: RecallSettings = { ...current };
+    for (const field of ['bm25TopK', 'embeddingTopK', 'rrfK', 'rerankCandidateLimit', 'finalRecallCount'] as const) {
+      const value = patch[field];
+      if (value === undefined) continue;
+      const { min, max } = RECALL_SETTING_LIMITS[field];
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new AiConfigError(`${field} must be an integer between ${min} and ${max}`);
+      next[field] = value;
+    }
+    if (patch.rerankEnabled !== undefined) {
+      if (typeof patch.rerankEnabled !== 'boolean') throw new AiConfigError('rerankEnabled must be a boolean');
+      next.rerankEnabled = patch.rerankEnabled;
+    }
+    await this.setMeta(META_RECALL_SETTINGS, JSON.stringify(next));
+    return next;
+  }
+
   /** Persists settings as given; range validation belongs to the API layer so tests can use short timeouts. */
   async saveStateTaskSettings(patch: Partial<StateTaskSettings>): Promise<StateTaskSettings> {
     const current = await this.getStateTaskSettings();
@@ -474,4 +503,16 @@ export class AiConfigStore {
       [key, value]
     );
   }
+}
+
+/** Falls back to the default for any stored value outside the documented range so a corrupt row never breaks recall. */
+function normalizeRecallSettings(parsed: Partial<RecallSettings>): RecallSettings {
+  const next: RecallSettings = { ...DEFAULT_RECALL_SETTINGS };
+  for (const field of ['bm25TopK', 'embeddingTopK', 'rrfK', 'rerankCandidateLimit', 'finalRecallCount'] as const) {
+    const value = Number(parsed[field]);
+    const { min, max } = RECALL_SETTING_LIMITS[field];
+    if (Number.isSafeInteger(value) && value >= min && value <= max) next[field] = value;
+  }
+  if (typeof parsed.rerankEnabled === 'boolean') next.rerankEnabled = parsed.rerankEnabled;
+  return next;
 }

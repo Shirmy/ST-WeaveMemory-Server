@@ -2,7 +2,7 @@ import bodyParser from 'body-parser';
 import type { Router } from 'express';
 import { AiRequestError, OpenAiCompatibleClient } from '../ai/openai-compatible-client';
 import type { StateTaskRunner } from '../ai/state-task-runner';
-import { LONG_MEMORY_SETTING_LIMITS, STATE_TASK_SETTING_LIMITS, type AiChannelInput, type AiChannelRecord, type StateTaskSettings } from '../ai/types';
+import { LONG_MEMORY_SETTING_LIMITS, RECALL_SETTING_LIMITS, STATE_TASK_SETTING_LIMITS, type AiChannelInput, type AiChannelRecord, type RecallSettings, type StateTaskSettings } from '../ai/types';
 import type { KnownCharacter } from '../state/schema';
 import { AiConfigStore, draftChannel, isAiRole, validatePromptContent } from '../storage/ai-config-store';
 import { ApiError } from './errors';
@@ -175,7 +175,7 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
 
   // ---------------------------------------------------------------- task settings
 
-  router.get('/ai/settings', wrapRoute(async () => ({ state: await aiConfig.getStateTaskSettings(), longMemory: await aiConfig.getLongMemorySettings(), limits: STATE_TASK_SETTING_LIMITS, longMemoryLimits: LONG_MEMORY_SETTING_LIMITS })));
+  router.get('/ai/settings', wrapRoute(async () => ({ state: await aiConfig.getStateTaskSettings(), longMemory: await aiConfig.getLongMemorySettings(), recall: await aiConfig.getRecallSettings(), limits: STATE_TASK_SETTING_LIMITS, longMemoryLimits: LONG_MEMORY_SETTING_LIMITS, recallLimits: RECALL_SETTING_LIMITS })));
 
   router.post('/ai/settings/save', json, wrapRoute(async req => {
     const body = bodyObject(req);
@@ -202,6 +202,19 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
     }
     const longMemoryPatch: { summaryIntervalFloors?: number } = {};
     if (longMemory.summaryIntervalFloors !== undefined) longMemoryPatch.summaryIntervalFloors = optionalInteger(longMemory.summaryIntervalFloors, 'longMemory.summaryIntervalFloors');
-    return { state: await aiConfig.saveStateTaskSettings(patch), longMemory: await aiConfig.saveLongMemorySettings(longMemoryPatch) };
+    const recall = body.recall && typeof body.recall === 'object' ? (body.recall as Record<string, unknown>) : {};
+    const recallPatch: Partial<RecallSettings> = {};
+    for (const field of ['bm25TopK', 'embeddingTopK', 'rrfK', 'rerankCandidateLimit', 'finalRecallCount'] as const) {
+      const value = optionalInteger(recall[field], `recall.${field}`);
+      if (value === undefined) continue;
+      const { min, max } = RECALL_SETTING_LIMITS[field];
+      if (value < min || value > max) throw new ApiError(400, 'WM_INVALID_REQUEST', `recall.${field} must be between ${min} and ${max}`);
+      recallPatch[field] = value;
+    }
+    if (recall.rerankEnabled !== undefined) {
+      if (typeof recall.rerankEnabled !== 'boolean') throw new ApiError(400, 'WM_INVALID_REQUEST', 'recall.rerankEnabled must be a boolean');
+      recallPatch.rerankEnabled = recall.rerankEnabled;
+    }
+    return { state: await aiConfig.saveStateTaskSettings(patch), longMemory: await aiConfig.saveLongMemorySettings(longMemoryPatch), recall: await aiConfig.saveRecallSettings(recallPatch) };
   }));
 }

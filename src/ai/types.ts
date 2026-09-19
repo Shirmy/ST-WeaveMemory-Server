@@ -79,6 +79,24 @@ export type LongMemorySettings = { summaryIntervalFloors: number };
 export const DEFAULT_LONG_MEMORY_SETTINGS: LongMemorySettings = { summaryIntervalFloors: 30 };
 export const LONG_MEMORY_SETTING_LIMITS = { summaryIntervalFloors: { min: 1, max: 500 } } as const;
 
+/** Roadmap §61 / §62: long-memory recall pipeline settings (BM25 + Embedding → RRF → optional reranker). */
+export type RecallSettings = {
+  bm25TopK: number;
+  embeddingTopK: number;
+  rrfK: number;
+  rerankEnabled: boolean;
+  rerankCandidateLimit: number;
+  finalRecallCount: number;
+};
+export const DEFAULT_RECALL_SETTINGS: RecallSettings = { bm25TopK: 10, embeddingTopK: 10, rrfK: 60, rerankEnabled: false, rerankCandidateLimit: 20, finalRecallCount: 6 };
+export const RECALL_SETTING_LIMITS = {
+  bm25TopK: { min: 1, max: 100 },
+  embeddingTopK: { min: 1, max: 100 },
+  rrfK: { min: 1, max: 1000 },
+  rerankCandidateLimit: { min: 1, max: 100 },
+  finalRecallCount: { min: 1, max: 50 }
+} as const;
+
 export const DEFAULT_STATE_TASK_SETTINGS: StateTaskSettings = { timeoutSec: 45, maxAttempts: 3, checkpointInterval: 20 };
 
 export const STATE_TASK_SETTING_LIMITS = {

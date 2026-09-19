@@ -17,8 +17,9 @@ SillyTavern 长期记忆、人物状态与剧情脉络管理插件的服务端�
 - Phase 10：长期记忆生成。长期记忆总结间隔由服务端持久化配置控制（默认 30 个 AI 楼），Scheduler 按 N 个 AI 楼形成 Batch，Batch 内由模型按事件生成多个 Slice；Batch 保存真实 FloorVariant 来源、人物、剧情线、时间、结束状态指纹和依赖指纹；正文 / swipe / 删除导致来源楼变化时整个 Batch 标记 stale，状态链稳定后自动补洞；相同依赖的历史 Batch 可在模型调用前直接复用并重新激活；提供 `/memory/list` 和 `/memory/resummarize`（`src/memory/`、`src/storage/long-memory-store.ts`）。
 - Phase 11：BM25 长期记忆召回。对当前 `chatId + branchId` 的 active 长期记忆建立独立本地索引；支持中文 unigram / bigram 和拉丁词元；title、summary、tags、人物、剧情线采用字段权重；stale 长期记忆自动移出索引；不同聊天与分支完全隔离；提供 `/memory/search`（`src/memory/bm25.ts`）。
 - Phase 12：Embedding 向量召回。向量模型使用已配置的 embedding 渠道与模型；向量保存于 SQLite，同时绑定内容指纹与 Embedding 渠道 / 模型配置指纹（apiType、规范化 baseUrl、排序后的非凭证 headers、model；API Key 不参与），正文、模型或影响向量空间的渠道配置变化时自动重新生成，仅轮换 API Key 不会重建；单条生成失败不会阻塞其它记忆；支持 stale 清理、索引重建、`/memory/vector-search` 和 `/memory/vector-rebuild`（`src/memory/embedding.ts`）。
+- Phase 13：RRF 融合与可选重排。BM25 与 Embedding 各自独立召回后按 RRF（score = Σ 1 / (k + rank)，默认 k = 60）合并；重排模型默认关闭，开启后使用已配置的 rerank 渠道与模型对前 N 个候选（默认 20）重打分，候选数不超过最终条数时跳过请求；任一路召回失败另一路继续，重排失败或返回无效分数时回退到 RRF 顺序，两路都失败才报错；召回参数（bm25TopK、embeddingTopK、rrfK、rerankEnabled、rerankCandidateLimit、finalRecallCount）由服务端持久化并通过 `/ai/settings` 读写；提供 `POST /recall/debug` 返回 query、两路候选、RRF、重排状态与最终候选（`src/memory/recall.ts`）。
 
-尚未实现：Phase 13 及之后阶段；融合召回、重排和长期记忆注入仍未接入，`longMemory` 保持为空；「跟随 SillyTavern」渠道模式延后。
+尚未实现：Phase 14 及之后阶段；Token 打包与长期记忆注入仍未接入，`longMemory` 保持为空；「跟随 SillyTavern」渠道模式延后。
 
 ## 数据目录
 
