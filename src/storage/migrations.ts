@@ -301,6 +301,13 @@ CREATE INDEX IF NOT EXISTS idx_jobs_branch_dependency
 CREATE INDEX IF NOT EXISTS idx_state_nodes_branch_dependency
   ON state_nodes(branch_id, dependency_fingerprint);
 `
+}, {
+  version: 7,
+  name: 'long-memory-source-dependencies',
+  sql: `
+ALTER TABLE long_memories ADD COLUMN batch_dependency_fingerprint TEXT NOT NULL DEFAULT '';
+ALTER TABLE long_memories ADD COLUMN source_floor_ids TEXT NOT NULL DEFAULT '[]';
+`
 }];
 
 export async function runMigrations(database: SqliteDatabase, paths: StoragePaths): Promise<void> {

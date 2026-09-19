@@ -75,6 +75,10 @@ export type StateTaskSettings = {
   checkpointInterval: number;
 };
 
+export type LongMemorySettings = { summaryIntervalFloors: number };
+export const DEFAULT_LONG_MEMORY_SETTINGS: LongMemorySettings = { summaryIntervalFloors: 30 };
+export const LONG_MEMORY_SETTING_LIMITS = { summaryIntervalFloors: { min: 1, max: 500 } } as const;
+
 export const DEFAULT_STATE_TASK_SETTINGS: StateTaskSettings = { timeoutSec: 45, maxAttempts: 3, checkpointInterval: 20 };
 
 export const STATE_TASK_SETTING_LIMITS = {

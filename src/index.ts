@@ -57,6 +57,7 @@ export async function init(router: Router): Promise<void> {
     promptVersion: async () => (await aiConfig.getActivePrompt('state')).promptVersion
   });
   let longMemoryScheduler: LongMemoryScheduler | null = null;
+  let longMemoryStore: LongMemoryStore | null = null;
   const runner = new StateTaskRunner({
     store,
     tasks,
@@ -65,12 +66,13 @@ export async function init(router: Router): Promise<void> {
     queue,
     context: new SnapshotContextProvider(chain, tasks),
     chain,
-    onStateCommitted: async input => longMemoryScheduler?.onStateCommitted(input)
+    onStateCommitted: async input => longMemoryScheduler?.onStateCommitted(input),
+    onFloorsStale: async input => { if (longMemoryStore) await longMemoryStore.markStaleByFloorIds(input.chatId, input.branchId, input.floorIds); }
   });
   stateTasks = runner;
-  const longMemoryStore = new LongMemoryStore(openedDatabase);
+  longMemoryStore = new LongMemoryStore(openedDatabase);
   const longMemoryGenerator = new LongMemoryGenerator({ aiConfig, client, store: longMemoryStore });
-  longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator });
+  longMemoryScheduler = new LongMemoryScheduler({ store, chain: chainStore, memories: longMemoryStore, generator: longMemoryGenerator, getSummaryIntervalFloors: async () => (await aiConfig.getLongMemorySettings()).summaryIntervalFloors });
   const activeRuntime = new MemoryRuntime(store, queue, runner, chain);
   registerRoutes(router, activeRuntime, openedDatabase);
   registerAiRoutes(router, { aiConfig, client, stateTasks: runner });

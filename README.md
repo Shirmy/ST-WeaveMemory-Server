@@ -2,7 +2,7 @@
 
 SillyTavern 长期记忆、人物状态与剧情脉络管理插件的服务端插件。负责状态链、状态增量、Checkpoint、长期记忆、检索和数据迁移。
 
-## 当前进度（v0.1.0，Phase 0～9 已完成）
+## 当前进度（v0.1.0，Phase 0～10 已完成）
 
 - Phase 0：`/health` 版本握手、`/generation/prepare` 生成前闸门、`/floor/finalize` AI 楼登记、每聊天串行任务队列、正文 fingerprint
 - Phase 1：SQLite 持久化（`sqlite3` 5.1.7，Phase 1 验收标准为 Windows 无需手动编译依赖）、migration runner（当前数据库 schema 版本 3）、WAL、事务封装、启动时每日备份与 migration 前备份（最多保留 5 份）
@@ -14,8 +14,9 @@ SillyTavern 长期记忆、人物状态与剧情脉络管理插件的服务端�
 - Phase 7：生成前状态同步闸门。`/generation/prepare` 检查上一 AI 楼的可信状态节点；pending / running 时等待，缺失、stale 或失败时触发一次补同步，最终失败或超时返回 `ready: false`；前端清理旧注入、提示用户并阻止正文生成（`src/core/runtime.ts`、前端 `src/host/generation.ts`）。
 - Phase 8：当前状态筛选和 depth 1 注入。根据当前用户输入、最近 4 个 AI 楼、`事·现在` 关联人物和当前活跃剧情线选择相关人物，再筛选剧情线、日历与未来剧情安排；只注入相关人物的谱 / 迹，始终保留事·现在，并通过 `setExtensionPrompt()` 以 SYSTEM / IN_CHAT / depth 1 注入（`src/state/current-state.ts`）。
 - Phase 9：近期上下文。支持原文模式和本地正则摘要模式，摘要逐楼提取失败时回退该楼正文，不调用额外 AI；近期楼数、模式和正则可在前端扩展设置中配置（`src/state/recent-context.ts`、前端 `src/ui/settings.ts`）。
+- Phase 10：长期记忆生成。长期记忆总结间隔由服务端持久化配置控制（默认 30 个 AI 楼），按有效状态节点序列分批生成事件切片；记录真实来源 FloorVariant、人物、剧情线、时间、结束状态指纹和批次依赖指纹；正文 / swipe / 删除导致来源楼变化时旧记录标记 stale，相同依赖可复用旧记录；提供 `/memory/list` 和 `/memory/resummarize`（`src/memory/`、`src/storage/long-memory-store.ts`）。
 
-尚未实现：Phase 10 及之后阶段；「跟随 SillyTavern」渠道模式延后。长期记忆生成与召回仍未接入，`longMemory` 保持为空。
+尚未实现：Phase 11 及之后阶段；长期记忆 BM25、Embedding、召回、重排和注入仍未接入，`longMemory` 保持为空；「跟随 SillyTavern」渠道模式延后。
 
 ## 数据目录
 
@@ -49,6 +50,8 @@ npm run test:state-rebuild
 npm run test:generation-gate
 npm run test:current-state
 npm run test:recent-context
+npm run test:long-memory
+npm run test:long-memory-scheduler
 ```
 
 `test:state-chain-1000` 会通过 mock 模型把 1000 个楼层真实写入 SQLite 再做恢复验证，运行约 40 秒。

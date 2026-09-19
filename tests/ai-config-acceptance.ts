@@ -122,9 +122,11 @@ async function main(): Promise<void> {
     store = new AiConfigStore(database, secrets);
     assert.deepEqual(await store.getStateTaskSettings(), { timeoutSec: 60, maxAttempts: 3, checkpointInterval: 20 });
 
-    // schema reached v6 and the jobs table gained the state task columns
+    assert.deepEqual(await store.saveLongMemorySettings({ summaryIntervalFloors: 20 }), { summaryIntervalFloors: 20 });
+    assert.deepEqual(await store.getLongMemorySettings(), { summaryIntervalFloors: 20 });
+    // schema reached v7 and long-memory source/dependency columns are present
     const version = await database.get<{ user_version: number }>('PRAGMA user_version');
-    assert.equal(version?.user_version, 6);
+    assert.equal(version?.user_version, 7);
     const jobColumns = await database.all<{ name: string }>('PRAGMA table_info(jobs)');
     for (const column of ['branch_id', 'floor_id', 'message_index', 'attempts', 'result_json', 'error_code', 'error_message', 'started_at', 'finished_at']) {
       assert.ok(jobColumns.some(item => item.name === column), `jobs.${column} missing`);

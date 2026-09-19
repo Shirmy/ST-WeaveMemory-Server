@@ -114,6 +114,7 @@ export type StateTaskRunnerDeps = {
   /** Test hook: overrides the exponential backoff between attempts. */
   backoffMs?: (attempt: number) => number;
   onStateCommitted?: (input: { chatId: string; branchId: string }) => Promise<void>;
+  onFloorsStale?: (input: { chatId: string; branchId: string; floorIds: string[] }) => Promise<void>;
 };
 
 type ReusePlan = { fromJobId: string; candidate: StateAnalysisCandidate };
@@ -229,6 +230,7 @@ export class StateTaskRunner {
    * active floors are cancelled, then the chain is re-planned so the first invalid floor is rebuilt.
    */
   async handleReconcile(result: ChatReconcileResult): Promise<RebuildPlan | null> {
+    await this.deps.onFloorsStale?.({ chatId: result.chatId, branchId: result.branchId, floorIds: result.staleFloorIds });
     await this.cancelForFloors(result.staleFloorIds, 'floor became stale during reconcile');
     const { chain, tasks } = this.deps;
     if (!chain) return null;

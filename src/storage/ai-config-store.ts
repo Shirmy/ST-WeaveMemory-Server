@@ -20,6 +20,7 @@ import {
   type PromptPresetRecord,
   type PromptType,
   type StateTaskSettings
+  , type LongMemorySettings
 } from '../ai/types';
 import type { SqliteDatabase } from './sqlite-database';
 
@@ -34,6 +35,7 @@ const MAX_PROMPT_LENGTH = 20000;
 const MAX_HEADER_COUNT = 20;
 const CHANNEL_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,80}$/;
 const META_STATE_SETTINGS = 'ai.state.settings';
+const META_LONG_MEMORY_SETTINGS = 'memory.long.settings';
 const metaActivePrompt = (type: PromptType): string => `prompt.active.${type}`;
 
 export const BUILTIN_PRESET_IDS: Record<PromptType, string> = { state: 'builtin:state', summary: 'builtin:summary' };
@@ -426,6 +428,22 @@ export class AiConfigStore {
     } catch {
       return { ...DEFAULT_STATE_TASK_SETTINGS };
     }
+  }
+
+  async getLongMemorySettings(): Promise<LongMemorySettings> {
+    const raw = await this.getMeta(META_LONG_MEMORY_SETTINGS);
+    if (!raw) return { summaryIntervalFloors: 30 };
+    try { const parsed = JSON.parse(raw) as Partial<LongMemorySettings>; const value = Number(parsed.summaryIntervalFloors); return { summaryIntervalFloors: Number.isSafeInteger(value) && value >= 1 && value <= 500 ? value : 30 }; }
+    catch { return { summaryIntervalFloors: 30 }; }
+  }
+
+  async saveLongMemorySettings(patch: Partial<LongMemorySettings>): Promise<LongMemorySettings> {
+    const current = await this.getLongMemorySettings();
+    const value = Number(patch.summaryIntervalFloors ?? current.summaryIntervalFloors);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 500) throw new AiConfigError('summaryIntervalFloors must be between 1 and 500');
+    const next = { summaryIntervalFloors: value };
+    await this.setMeta(META_LONG_MEMORY_SETTINGS, JSON.stringify(next));
+    return next;
   }
 
   /** Persists settings as given; range validation belongs to the API layer so tests can use short timeouts. */

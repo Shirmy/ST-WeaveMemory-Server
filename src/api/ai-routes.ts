@@ -2,7 +2,7 @@ import bodyParser from 'body-parser';
 import type { Router } from 'express';
 import { AiRequestError, OpenAiCompatibleClient } from '../ai/openai-compatible-client';
 import type { StateTaskRunner } from '../ai/state-task-runner';
-import { STATE_TASK_SETTING_LIMITS, type AiChannelInput, type AiChannelRecord, type StateTaskSettings } from '../ai/types';
+import { LONG_MEMORY_SETTING_LIMITS, STATE_TASK_SETTING_LIMITS, type AiChannelInput, type AiChannelRecord, type StateTaskSettings } from '../ai/types';
 import type { KnownCharacter } from '../state/schema';
 import { AiConfigStore, draftChannel, isAiRole, validatePromptContent } from '../storage/ai-config-store';
 import { ApiError } from './errors';
@@ -175,11 +175,12 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
 
   // ---------------------------------------------------------------- task settings
 
-  router.get('/ai/settings', wrapRoute(async () => ({ state: await aiConfig.getStateTaskSettings(), limits: STATE_TASK_SETTING_LIMITS })));
+  router.get('/ai/settings', wrapRoute(async () => ({ state: await aiConfig.getStateTaskSettings(), longMemory: await aiConfig.getLongMemorySettings(), limits: STATE_TASK_SETTING_LIMITS, longMemoryLimits: LONG_MEMORY_SETTING_LIMITS })));
 
   router.post('/ai/settings/save', json, wrapRoute(async req => {
     const body = bodyObject(req);
     const state = body.state && typeof body.state === 'object' ? (body.state as Record<string, unknown>) : {};
+    const longMemory = body.longMemory && typeof body.longMemory === 'object' ? (body.longMemory as Record<string, unknown>) : {};
     const patch: Partial<StateTaskSettings> = {};
     const timeoutSec = optionalInteger(state.timeoutSec, 'state.timeoutSec');
     const maxAttempts = optionalInteger(state.maxAttempts, 'state.maxAttempts');
@@ -199,6 +200,8 @@ export function registerAiRoutes(router: Router, deps: AiRouteDependencies): voi
       if (checkpointInterval < min || checkpointInterval > max) throw new ApiError(400, 'WM_INVALID_REQUEST', `state.checkpointInterval must be between ${min} and ${max}`);
       patch.checkpointInterval = checkpointInterval;
     }
-    return { state: await aiConfig.saveStateTaskSettings(patch) };
+    const longMemoryPatch: { summaryIntervalFloors?: number } = {};
+    if (longMemory.summaryIntervalFloors !== undefined) longMemoryPatch.summaryIntervalFloors = optionalInteger(longMemory.summaryIntervalFloors, 'longMemory.summaryIntervalFloors');
+    return { state: await aiConfig.saveStateTaskSettings(patch), longMemory: await aiConfig.saveLongMemorySettings(longMemoryPatch) };
   }));
 }
