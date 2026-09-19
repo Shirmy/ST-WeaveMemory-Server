@@ -10,6 +10,9 @@ export type GenerationPrepareRequest = {
   contextSize: number;
   latestUserIndex: number | null;
   latestUserText: string;
+  recentContextMode?: 'raw' | 'summary';
+  recentSummaryRegex?: string;
+  recentFloorCount?: number;
 };
 
 export type FloorFinalizeRequest = {

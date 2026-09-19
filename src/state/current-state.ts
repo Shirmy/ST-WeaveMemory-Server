@@ -1,11 +1,13 @@
 import type { ChainPosition } from './chain-engine';
 import type { CalendarEntry, CharacterProfile, CharacterTrace, PlotPlan, Plotline, StateSnapshot } from './schema';
+import type { RecentContextItem } from './recent-context';
 
 export type CurrentStateInput = {
   snapshot: StateSnapshot;
   userText: string;
   recentFloorTexts: string[];
   recentPositions: ChainPosition[];
+  recentContext?: RecentContextItem[];
 };
 
 export type CurrentStateResult = {
@@ -56,6 +58,7 @@ export function renderCurrentState(input: CurrentStateInput): CurrentStateResult
     renderProfiles(selectedProfiles),
     renderTraces(selectedTraces),
     renderNow(story.now),
+    renderRecentContext(input.recentContext ?? []),
     renderCalendar(calendar),
     renderPlotlines(selectedPlotlines),
     renderPlans(selectedPlans)
@@ -88,6 +91,11 @@ function renderTraces(traces: CharacterTrace[]): string {
 
 function renderNow(now: StateSnapshot['story']['now']): string {
   return `[事·现在]\n${JSON.stringify({ currentTime: now.currentTime, ongoing: now.ongoing, upcoming: now.upcoming })}`;
+}
+
+function renderRecentContext(items: RecentContextItem[]): string {
+  if (!items.length) return '[织忆·近期上下文]\n暂无近期正文。';
+  return `[织忆·近期上下文]\n${items.map(item => `- AI楼 ${item.messageIndex}（${item.source === 'summary' ? '摘要' : item.source === 'fallback' ? '摘要失败，使用原文' : '原文'}）：${item.text}`).join('\n')}`;
 }
 
 function renderCalendar(entries: CalendarEntry[]): string {

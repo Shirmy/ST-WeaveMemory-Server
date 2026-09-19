@@ -5,6 +5,7 @@ import { floorKeyFor, type MemoryStore } from '../storage/types';
 import { PerChatQueue } from '../queue/per-chat-queue';
 import type { ChainPosition, StateChainEngine, TrustedPrefix } from '../state/chain-engine';
 import { renderCurrentState } from '../state/current-state';
+import { buildRecentContext } from '../state/recent-context';
 
 const GENERATION_GATE_TIMEOUT_MS = 45_000;
 const GENERATION_GATE_POLL_MS = 150;
@@ -95,13 +96,18 @@ export class MemoryRuntime {
           ? await this.chain.snapshotAtFloor(input.chatId, branchId, previous.messageIndex, previous.swipeId)
           : null;
         const snapshot = view?.snapshot ?? (await this.chain.current(input.chatId, branchId)).snapshot;
-        const recentPositions = prefix.positions.filter(position => position.messageIndex < (input.latestUserIndex ?? Number.MAX_SAFE_INTEGER)).slice(-4);
+        const recentPositions = prefix.positions.filter(position => position.messageIndex < (input.latestUserIndex ?? Number.MAX_SAFE_INTEGER)).slice(-20);
         const recentFloors = await Promise.all(recentPositions.map(position => this.store.getFloor(position.floorId)));
+        const recentItems = buildRecentContext(
+          recentFloors.filter(Boolean).map(floor => ({ floorId: floor!.floorKey, messageIndex: floor!.messageIndex, content: floor!.content })),
+          { mode: input.recentContextMode, summaryRegex: input.recentSummaryRegex, recentFloorCount: input.recentFloorCount }
+        );
         const rendered = renderCurrentState({
           snapshot,
           userText: input.latestUserText,
-          recentFloorTexts: recentFloors.filter(Boolean).map(floor => floor!.content),
-          recentPositions
+          recentFloorTexts: recentItems.map(item => item.text),
+          recentPositions,
+          recentContext: recentItems
         });
         return { ready: true, longMemory: '', currentState: rendered.text, diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: rendered.tokens, stateNodeId: previous?.node?.stateNodeId } };
       }

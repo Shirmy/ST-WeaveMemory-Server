@@ -38,7 +38,10 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
         generationType: String(body.generationType ?? 'normal'),
         contextSize: Number(body.contextSize) || 0,
         latestUserIndex: Number.isSafeInteger(body.latestUserIndex) ? body.latestUserIndex : null,
-        latestUserText: String(body.latestUserText ?? '')
+        latestUserText: String(body.latestUserText ?? ''),
+        recentContextMode: body.recentContextMode === 'summary' ? 'summary' : 'raw',
+        recentSummaryRegex: typeof body.recentSummaryRegex === 'string' ? body.recentSummaryRegex : '',
+        recentFloorCount: Number.isSafeInteger(body.recentFloorCount) ? body.recentFloorCount : 4
       };
       return res.json(await runtime.prepareGeneration(payload));
     } catch (error) {
