@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { AiRequestError } from '../src/ai/openai-compatible-client';
 import type { AiChannelRecord, RecallSettings } from '../src/ai/types';
 import { DEFAULT_RECALL_SETTINGS } from '../src/ai/types';
+import { AiConfigError } from '../src/storage/ai-config-store';
 import type { LongMemoryRecord } from '../src/memory/long-memory';
 import { RecallService, reciprocalRankFusion, rerankDocument, type RankedMemory } from '../src/memory/recall';
 
@@ -129,7 +130,7 @@ async function main(): Promise<void> {
 
   // 5b. Rerank binding/channel resolution fails: optional enhancement stays degraded to RRF.
   {
-    const t = build({ settings: { rerankEnabled: true }, resolveError: new AiRequestError('WM_AI_CHANNEL_UNAVAILABLE', 'stored API key cannot be decrypted', false) });
+    const t = build({ settings: { rerankEnabled: true }, resolveError: new AiConfigError('stored API key cannot be decrypted', 'WM_AI_CHANNEL_UNAVAILABLE') });
     t.bm25.results = ranked(['a', 'b', 'c']);
     const result = await t.service.recall('chat', 'branch', 'q');
     assert.equal(result.rerank.status, 'failed');

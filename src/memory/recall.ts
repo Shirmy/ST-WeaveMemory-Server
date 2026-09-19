@@ -132,7 +132,8 @@ export class RecallService {
 
   private rerankFailure(error: unknown, errors: RecallStageError[]): RecallResult['rerank'] {
     const message = error instanceof Error ? error.message : String(error);
-    const code = error instanceof AiRequestError ? error.code : 'WM_INTERNAL_ERROR';
+    const candidateCode = error && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined;
+    const code = error instanceof AiRequestError ? error.code : typeof candidateCode === 'string' ? candidateCode : 'WM_INTERNAL_ERROR';
     errors.push({ source: 'rerank', code, message });
     console.warn('[WeaveMemory] rerank setup failed; falling back to RRF order', message);
     return { status: 'failed', documentCount: 0, model: null, error: message, candidates: [] };
