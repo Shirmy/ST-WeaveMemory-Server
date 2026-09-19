@@ -13,6 +13,7 @@ export type GenerationPrepareRequest = {
   recentContextMode?: 'raw' | 'summary';
   recentSummaryRegex?: string;
   recentFloorCount?: number;
+  externalState?: import('./state/external-mapping').ExternalStateSnapshot;
 };
 
 export type FloorFinalizeRequest = {

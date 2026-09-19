@@ -64,6 +64,12 @@ async function main(): Promise<void> {
   const prepared = await runtime.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 0, latestUserIndex: 2, latestUserText: 'Alice，我们继续调查。' });
   assert.equal(prepared.ready, true);
   assert.equal(prepared.diagnostics.stateTokens, rendered.tokens);
+  const mapped = await runtime.prepareGeneration({ chatId: 'chat', generationType: 'normal', contextSize: 0, latestUserIndex: 2, latestUserText: 'Alice', externalState: { source: 'mvu', detected: true, statData: { role: { location: 'study' } }, messageIndex: 1, swipeId: 0, cardId: 'card-a', mappings: [{ id: 'location', source: 'mvu', externalPath: 'role.location', weaveTarget: { domain: 'trace', path: 'currentSituations.location' }, mode: 'equivalent', enabled: true }] } });
+  assert.equal(mapped.ready, true);
+  const mappedDiagnostics = mapped.diagnostics as typeof mapped.diagnostics & { tokensBeforeMapping?: number; tokensAfterMapping?: number; activeEquivalentMappings?: string[] };
+  assert.equal((mappedDiagnostics.tokensBeforeMapping ?? 0) >= (mappedDiagnostics.tokensAfterMapping ?? 0), true);
+  assert.equal(mappedDiagnostics.stateTokens, mappedDiagnostics.tokensAfterMapping);
+  assert.deepEqual(mappedDiagnostics.activeEquivalentMappings, ['location']);
   console.log('current state acceptance passed');
 }
 

@@ -41,7 +41,8 @@ export function registerRoutes(router: Router, runtime: MemoryRuntime, database:
         latestUserText: String(body.latestUserText ?? ''),
         recentContextMode: body.recentContextMode === 'summary' ? 'summary' : 'raw',
         recentSummaryRegex: typeof body.recentSummaryRegex === 'string' ? body.recentSummaryRegex : '',
-        recentFloorCount: Number.isSafeInteger(body.recentFloorCount) ? body.recentFloorCount : 4
+        recentFloorCount: Number.isSafeInteger(body.recentFloorCount) ? body.recentFloorCount : 4,
+        externalState: body.externalState && typeof body.externalState === 'object' ? body.externalState : undefined
       };
       return res.json(await runtime.prepareGeneration(payload));
     } catch (error) {

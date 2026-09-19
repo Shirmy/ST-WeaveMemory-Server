@@ -8,6 +8,7 @@ export type CurrentStateInput = {
   recentFloorTexts: string[];
   recentPositions: ChainPosition[];
   recentContext?: RecentContextItem[];
+  suppressedWeaveFields?: string[];
 };
 
 export type CurrentStateResult = {
@@ -52,16 +53,17 @@ export function renderCurrentState(input: CurrentStateInput): CurrentStateResult
     .filter(plan => plan.pinned || plan.relatedCharacterIds?.some(id => relatedCharacters.has(id)) || plan.relatedPlotlineIds?.some(id => relatedPlotlines.has(id)));
   const calendar = selectCalendar(story.calendar, story.now.currentTime, relatedCharacters);
 
+  const suppressed = new Set(input.suppressedWeaveFields ?? []);
   const sections: string[] = [
     '[织忆·当前状态]',
     '以下是当前剧情的结构化状态，只读参考。若与最新正文冲突，以最新正文为准。',
-    renderProfiles(selectedProfiles),
-    renderTraces(selectedTraces),
-    renderNow(story.now),
+    renderProfiles(selectedProfiles, suppressed),
+    renderTraces(selectedTraces, suppressed),
+    renderNow(story.now, suppressed),
     renderRecentContext(input.recentContext ?? []),
-    renderCalendar(calendar),
-    renderPlotlines(selectedPlotlines),
-    renderPlans(selectedPlans)
+    renderCalendar(calendar, suppressed),
+    renderPlotlines(selectedPlotlines, suppressed),
+    renderPlans(selectedPlans, suppressed)
   ];
   const text = sections.filter(Boolean).join('\n\n');
   return { text, characterIds: [...relatedCharacters], plotlineIds: [...relatedPlotlines], tokens: estimateTokens(text) };
@@ -75,21 +77,22 @@ export function estimateTokens(text: string): number {
   return text ? Math.max(1, Math.ceil(text.length / 4)) : 0;
 }
 
-function renderProfiles(profiles: CharacterProfile[]): string {
+function renderProfiles(profiles: CharacterProfile[], suppressed: Set<string>): string {
   if (!profiles.length) return '[谱]\n暂无与当前输入或近期剧情相关的人物。';
   return `[谱]\n${profiles.map(profile => {
     const value: Record<string, unknown> = {};
-    for (const field of PROFILE_FIELDS) value[field] = profile[field];
+    for (const field of PROFILE_FIELDS) if (!suppressed.has(`profile:${field}`)) value[field] = profile[field];
     return `- ${JSON.stringify(value)}`;
   }).join('\n')}`;
 }
 
-function renderTraces(traces: CharacterTrace[]): string {
+function renderTraces(traces: CharacterTrace[], suppressed: Set<string>): string {
   if (!traces.length) return '[迹]\n暂无相关人物当前状态。';
-  return `[迹]\n${traces.map(trace => `- ${JSON.stringify({ characterId: trace.characterId, longTermTendencies: trace.longTermTendencies, currentSituations: trace.currentSituations, visibility: trace.visibility, affinity: trace.affinity })}`).join('\n')}`;
+  return `[迹]\n${traces.map(trace => { const value: Record<string, unknown> = { characterId: trace.characterId }; for (const field of ['longTermTendencies', 'currentSituations', 'visibility', 'affinity'] as const) if (!suppressed.has(`trace:${field}`)) value[field] = trace[field]; return `- ${JSON.stringify(value)}`; }).join('\n')}`;
 }
 
-function renderNow(now: StateSnapshot['story']['now']): string {
+function renderNow(now: StateSnapshot['story']['now'], suppressed: Set<string>): string {
+  if (suppressed.has('story:now')) return '[事·现在]\n当前事件状态已由外部状态源注入。';
   return `[事·现在]\n${JSON.stringify({ currentTime: now.currentTime, ongoing: now.ongoing, upcoming: now.upcoming })}`;
 }
 
@@ -98,15 +101,18 @@ function renderRecentContext(items: RecentContextItem[]): string {
   return `[织忆·近期上下文]\n${items.map(item => `- AI楼 ${item.messageIndex}（${item.source === 'summary' ? '摘要' : item.source === 'fallback' ? '摘要失败，使用原文' : '原文'}）：${item.text}`).join('\n')}`;
 }
 
-function renderCalendar(entries: CalendarEntry[]): string {
+function renderCalendar(entries: CalendarEntry[], suppressed: Set<string>): string {
+  if (suppressed.has('story:calendar')) return '[事·日历]\n当前日历已由外部状态源注入。';
   return `[事·日历]\n${entries.length ? entries.map(entry => `- ${JSON.stringify(entry)}`).join('\n') : '当前日期附近暂无已确认事项。'}`;
 }
 
-function renderPlotlines(plotlines: Plotline[]): string {
+function renderPlotlines(plotlines: Plotline[], suppressed: Set<string>): string {
+  if (suppressed.has('story:plotlines')) return '[事·剧情线]\n当前剧情线已由外部状态源注入。';
   return `[事·剧情线]\n${plotlines.length ? plotlines.map(plotline => `- ${JSON.stringify(plotline)}`).join('\n') : '暂无当前相关剧情线。'}`;
 }
 
-function renderPlans(plans: PlotPlan[]): string {
+function renderPlans(plans: PlotPlan[], suppressed: Set<string>): string {
+  if (suppressed.has('story:plotPlans')) return '[事·剧情安排]\n以下为未来规划，不代表已经发生。\n当前剧情安排已由外部状态源注入。';
   return `[事·剧情安排]\n以下为未来规划，不代表已经发生。\n${plans.length ? plans.map(plan => `- ${JSON.stringify(plan)}`).join('\n') : '暂无当前相关剧情安排。'}`;
 }
 

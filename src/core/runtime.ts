@@ -6,6 +6,7 @@ import { PerChatQueue } from '../queue/per-chat-queue';
 import type { ChainPosition, StateChainEngine, TrustedPrefix } from '../state/chain-engine';
 import { renderCurrentState } from '../state/current-state';
 import { buildRecentContext } from '../state/recent-context';
+import { resolveExternalMappings } from '../state/external-mapping';
 
 const GENERATION_GATE_TIMEOUT_MS = 45_000;
 const GENERATION_GATE_POLL_MS = 150;
@@ -102,14 +103,19 @@ export class MemoryRuntime {
           recentFloors.filter(Boolean).map(floor => ({ floorId: floor!.floorKey, messageIndex: floor!.messageIndex, content: floor!.content })),
           { mode: input.recentContextMode, summaryRegex: input.recentSummaryRegex, recentFloorCount: input.recentFloorCount }
         );
-        const rendered = renderCurrentState({
+        const renderInput = {
           snapshot,
           userText: input.latestUserText,
           recentFloorTexts: recentItems.map(item => item.text),
           recentPositions,
           recentContext: recentItems
-        });
-        return { ready: true, longMemory: '', currentState: rendered.text, diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: rendered.tokens, stateNodeId: previous?.node?.stateNodeId } };
+        };
+        let resolution = resolveExternalMappings();
+        try { resolution = resolveExternalMappings(input.externalState); } catch (error) { console.warn('[WeaveMemory] external mapping ignored', error); }
+        const before = renderCurrentState(renderInput);
+        const rendered = renderCurrentState({ ...renderInput, suppressedWeaveFields: resolution.suppressedWeaveFields });
+        const external = input.externalState;
+        return { ready: true, longMemory: '', currentState: rendered.text, diagnostics: { memoryCount: 0, memoryTokens: 0, stateTokens: rendered.tokens, stateNodeId: previous?.node?.stateNodeId, externalSource: external?.source ?? null, mvuDetected: external?.detected ?? false, sourceMessageIndex: external?.messageIndex ?? null, sourceSwipeId: external?.swipeId ?? null, mappingCount: resolution.mappingCount, activeEquivalentMappings: resolution.activeEquivalentMappings, activeRelatedMappings: resolution.activeRelatedMappings, suppressedWeaveFields: resolution.suppressedWeaveFields, mappingFailures: resolution.mappingFailures, tokensBeforeMapping: before.tokens, tokensAfterMapping: rendered.tokens } };
       }
       const status = await this.positionStatus(previous, input.chatId);
       if (!resyncStarted && (status === 'failed' || status === 'missing' || status === 'stale')) {
